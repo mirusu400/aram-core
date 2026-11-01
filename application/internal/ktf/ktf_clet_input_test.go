@@ -2,74 +2,91 @@ package ktf
 
 import (
 	"testing"
+	"time"
 
 	"github.com/mirusu400/aram-core/cpu"
 )
 
-// Clet$CletCard is the Java-facing veneer of KTF's native Clet input path.
-// SDK generations disagree about whether it receives the native reversed edge
-// values or the regular KWIS Card values, so the package-selected ABI must be
-// applied without changing ordinary Card input.
-func TestKTFCletCardUsesSelectedInputEdgeABI(t *testing.T) {
+// Clet$CletCard is the Java facade every KTF Clet build compiles into its
+// client. Its keyNotify(type, key) is ordinary KWIS Card glue: it turns
+// EventQueue.KEY_PRESSED (1) into the native press event 2, KEY_RELEASED (2)
+// into the native release event 3, and anything else - KEY_REPEATED - into 4.
+// Handing it the two edges the other way round made a Clet see its key go up
+// when the player pressed it and go down when the player let go, so a tank in
+// SBS포트리스4 (issue #570) or a ship in 크로노스윙 (issue #547) sat still while
+// the direction was held and then drove off on its own once it was released.
+func TestKTFCletCardReceivesKWISKeyEdges(t *testing.T) {
+	runtime := newScratchKTFRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	class := inspectClass(t, runtime, ensureClass(t, runtime, "Clet$CletCard"))
+	_, err := runtime.addHostJavaMethod(class, "keyNotify", "(II)Z")
+	check(t, err)
+	card, err := runtime.NewJavaInstanceForClass(class)
+	check(t, err)
+	const display = uint32(0x10004000)
+	runtime.DefaultDisplay = display
+	runtime.DisplayCards[display] = card
+
+	// deliver drains the shared input service and returns the keyNotify type
+	// the card was called with, then retires that call.
+	deliver := func(step string) uint32 {
+		t.Helper()
+		check(t, runtime.DrainServiceEvents(runtime.Services.Clock.Monotonic()))
+		var task *Task
+		for _, candidate := range runtime.Tasks {
+			if !candidate.Done && candidate.KeyCard == card {
+				task = candidate
+			}
+		}
+		if task == nil {
+			t.Fatalf("%s did not reach the Clet card", step)
+		}
+		check(t, runtime.CPU.RestoreContext(task.Context))
+		edge, err := runtime.CPU.ReadRegister(cpu.RegisterR2)
+		check(t, err)
+		key, err := runtime.CPU.ReadRegister(cpu.RegisterR3)
+		check(t, err)
+		if int32(key) != -4 {
+			t.Fatalf("%s key = %d, want -4", step, int32(key))
+		}
+		task.Done = true
+		return edge
+	}
+
+	check(t, runtime.Services.QueueInput(runtime.ServiceOwner, "right", true, 0))
+	if got := deliver("press"); got != KeyPressed {
+		t.Fatalf("Clet press keyNotify type = %d, want KEY_PRESSED %d", got, KeyPressed)
+	}
+	// Hold the key past the auto-repeat delay.
+	check(t, runtime.Services.Advance(runtime.ServiceOwner, time.Second))
+	if got := deliver("auto-repeat"); got != KeyRepeated {
+		t.Fatalf("Clet repeat keyNotify type = %d, want KEY_REPEATED %d", got, KeyRepeated)
+	}
+	check(t, runtime.Services.QueueInput(
+		runtime.ServiceOwner, "right", false, runtime.Services.Clock.Monotonic(),
+	))
+	if got := deliver("release"); got != KeyReleased {
+		t.Fatalf("Clet release keyNotify type = %d, want KEY_RELEASED %d", got, KeyReleased)
+	}
+}
+
+// An ordinary KWIS Card keeps the values it always had, including a held key's
+// auto-repeat arriving as another KEY_PRESSED.
+func TestKTFOrdinaryCardKeyEdgesAreUnchanged(t *testing.T) {
+	runtime := newTestRuntime(t)
+	ordinary := newHostObject(t, runtime, "org/kwis/msp/lcdui/Card")
 	for _, test := range []struct {
-		name         string
-		javaEdges    bool
-		pressedEdge  uint32
-		releasedEdge uint32
+		edge, want uint32
 	}{
-		{"native", false, KeyReleased, KeyPressed},
-		{"java", true, KeyPressed, KeyReleased},
+		{KeyPressed, KeyPressed},
+		{KeyReleased, KeyReleased},
+		{KeyRepeated, KeyPressed},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			runtime := newTestRuntime(t)
-			runtime.JvmContext = allocWords(t, runtime, 3+128)
-			runtime.cletJavaInputEdges = test.javaEdges
-
-			class := inspectClass(t, runtime, ensureClass(t, runtime, "Clet$CletCard"))
-			_, err := runtime.addHostJavaMethod(class, "keyNotify", "(II)Z")
-			check(t, err)
-			card, err := runtime.NewJavaInstanceForClass(class)
-			check(t, err)
-
-			const display = uint32(0x10004000)
-			runtime.DefaultDisplay = display
-			runtime.DisplayCards[display] = card
-			queued, err := runtime.QueueKeyEvent(true, -5)
-			check(t, err)
-			if !queued || len(runtime.Tasks) != 1 {
-				t.Fatalf("Clet press queue = %t, tasks=%d", queued, len(runtime.Tasks))
-			}
-			check(t, runtime.CPU.RestoreContext(runtime.Tasks[0].Context))
-			pressed, err := runtime.CPU.ReadRegister(cpu.RegisterR2)
-			check(t, err)
-			if pressed != test.pressedEdge {
-				t.Fatalf("Clet press event = %d, want %d", pressed, test.pressedEdge)
-			}
-			runtime.Tasks[0].Done = true
-			queued, err = runtime.QueueKeyEvent(false, -5)
-			check(t, err)
-			if !queued {
-				t.Fatal("Clet release did not queue")
-			}
-			check(t, runtime.CPU.RestoreContext(runtime.Tasks[0].Context))
-			released, err := runtime.CPU.ReadRegister(cpu.RegisterR2)
-			check(t, err)
-			if released != test.releasedEdge {
-				t.Fatalf("Clet release event = %d, want %d", released, test.releasedEdge)
-			}
-
-			ordinary := newHostObject(t, runtime, "org/kwis/msp/lcdui/Card")
-			pressed, err = runtime.keyEventType(ordinary, true)
-			check(t, err)
-			if pressed != KeyPressed {
-				t.Fatalf("ordinary Card press event = %d, want %d", pressed, KeyPressed)
-			}
-			released, err = runtime.keyEventType(ordinary, false)
-			check(t, err)
-			if released != KeyReleased {
-				t.Fatalf("ordinary Card release event = %d, want %d", released, KeyReleased)
-			}
-		})
+		got, err := runtime.keyEventType(ordinary, test.edge)
+		check(t, err)
+		if got != test.want {
+			t.Fatalf("ordinary Card edge %d keyNotify type = %d, want %d", test.edge, got, test.want)
+		}
 	}
 }
 

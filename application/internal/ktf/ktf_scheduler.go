@@ -541,12 +541,30 @@ func (r *Runtime) canQueueCardKeyEvent() bool {
 }
 
 func (r *Runtime) QueueKeyEvent(pressed bool, key int32) (bool, error) {
+	edge := KeyReleased
+	if pressed {
+		edge = KeyPressed
+	}
+	return r.queueKeyEdge(edge, key)
+}
+
+// QueueKeyRepeat posts one auto-repeat of a held key. It follows the same
+// delivery rules as QueueKeyEvent.
+func (r *Runtime) QueueKeyRepeat(key int32) (bool, error) {
+	return r.queueKeyEdge(KeyRepeated, key)
+}
+
+// queueKeyEdge delivers one KWIS key event type (KeyPressed, KeyReleased or
+// KeyRepeated) for a handset key.
+func (r *Runtime) queueKeyEdge(edge uint32, key int32) (bool, error) {
 	if listener := r.grabbedKeys[key]; listener != 0 {
 		if !r.HasJavaTaskCapacity() {
 			return false, nil
 		}
-		eventType := KeyReleased
-		if pressed {
+		// A grabbed key's listener has always been handed an auto-repeat as
+		// another press.
+		eventType := edge
+		if eventType == KeyRepeated {
 			eventType = KeyPressed
 		}
 		if err := r.queueJletEventListener(listener, ktfJavaEvent{
@@ -569,7 +587,7 @@ func (r *Runtime) QueueKeyEvent(pressed bool, key int32) (bool, error) {
 		return false, nil
 	}
 	card := r.DisplayCards[r.DefaultDisplay]
-	eventType, err := r.keyEventType(card, pressed)
+	eventType, err := r.keyEventType(card, edge)
 	if err != nil {
 		return false, err
 	}
@@ -598,15 +616,27 @@ func (r *Runtime) QueueKeyEvent(pressed bool, key int32) (bool, error) {
 	return true, nil
 }
 
-// keyEventType chooses the callback ABI the selected card was compiled for.
-// Regular KWIS Card and LWC handlers use 1 for press and 2 for release. Most
-// known Clet$CletCard builds use the older native ABI with those values
-// reversed (issue #237), but some SDK builds forward the regular Java values
-// into their bundled native dispatcher (issue #547).
-func (r *Runtime) keyEventType(card uint32, pressed bool) (uint32, error) {
-	eventType := KeyReleased
-	if pressed {
-		eventType = KeyPressed
+// keyEventType chooses the keyNotify type the selected card receives for one
+// key edge. Every card, Clet$CletCard included, is a KWIS Card and is given
+// the EventQueue values: KEY_PRESSED (1) and KEY_RELEASED (2).
+//
+// Clet$CletCard is the facade the KTF SDK compiles into every Clet client. Its
+// keyNotify forwards KEY_PRESSED to the native handler as event 2,
+// KEY_RELEASED as 3 and every other type as 4, the WIPI-C press, release and
+// repeat events; all 96 Clet builds in the test corpus carry that same
+// mapping. These two edges used to be swapped for Clet cards, which made a
+// native Clet see a key go up when it was pressed and go down when it was
+// released: a direction held in SBS포트리스4 (issue #570) or 크로노스윙 (issue
+// #547) did nothing until it was let go, and then the tank or ship kept moving
+// on its own.
+//
+// An auto-repeat is KEY_REPEATED (3) for a Clet card, which its facade turns
+// into the native repeat event. Delivering it as another press would hand the
+// native code a second press with no release in between. Other cards have
+// always been given an auto-repeat as another KEY_PRESSED, and keep it.
+func (r *Runtime) keyEventType(card uint32, edge uint32) (uint32, error) {
+	if edge != KeyRepeated {
+		return edge, nil
 	}
 	cardWords, err := r.ReadWords(card, 2)
 	if err != nil {
@@ -616,13 +646,10 @@ func (r *Runtime) keyEventType(card uint32, pressed bool) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	if class.Name == "Clet$CletCard" && !r.cletJavaInputEdges {
-		if pressed {
-			return KeyReleased, nil
-		}
-		return KeyPressed, nil
+	if class.Name == "Clet$CletCard" {
+		return KeyRepeated, nil
 	}
-	return eventType, nil
+	return KeyPressed, nil
 }
 
 func (r *Runtime) pendingKeyTask(card uint32) *Task {
@@ -1452,10 +1479,18 @@ func (r *Runtime) DrainServiceEvents(now time.Duration) error {
 				)
 				break
 			}
-			queued, err := r.QueueKeyEvent(
-				event.Kind != shared.EventInputRelease,
-				int32(key),
+			var (
+				queued bool
+				err    error
 			)
+			if event.Kind == shared.EventInputRepeat {
+				queued, err = r.QueueKeyRepeat(int32(key))
+			} else {
+				queued, err = r.QueueKeyEvent(
+					event.Kind == shared.EventInputPress,
+					int32(key),
+				)
+			}
 			if err != nil {
 				return fmt.Errorf(
 					"deliver shared KTF input %q: %w",

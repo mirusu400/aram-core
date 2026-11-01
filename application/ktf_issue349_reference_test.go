@@ -36,14 +36,19 @@ func TestKTFIssue349FillLoopPreservesGameAndAudio(t *testing.T) {
 		}
 	}
 	// Captured before fill-loop acceleration; the script reaches song play.
+	// 리듬스타 is a native Clet. Since issue #570 its card gets each key's
+	// press edge as a press, so it acts on the press 5 frames before the
+	// release it used to act on. The 600, 900, 1800 and 2000 checkpoints were
+	// re-captured then. They show the same screens as before, at a slightly
+	// different animation phase.
 	goldens := map[int]string{
 		300:  "c3a4ead5d4abc916c85aa9903ea1278cabc06b7582e1740f27e94fbb58c7a636",
-		600:  "782ac4c4dd86d479f96e8e6779bda8b36b668ab9c408173b91ba906c8babb0f8",
-		900:  "5a5e69a61e26f9d6a6bc6e7224ceb408ee24ea5c55432c094ad1956fc48a3cd7",
+		600:  "2da29ca9d14f803d145c07b5c302c78504e3a045fd0f46def09c1bcaacadf673",
+		900:  "3338a56da00b31841218b990a8945e41e310cb58c8d3a89bb7e17f317e46afa9",
 		1200: "d78ae7617d10352071fd85f1e3de908f55245e47e6d6bd1b3a06559b82f205d2",
 		1500: "b4a0b9b90c76eeb2b54127f1e99f9f86a2885c522effad668289492e8e6fb412",
-		1800: "8a25cf7d64265aff4fc1df0ecfb69fb2a388665bd35eb4a116299b515aa394b8",
-		2000: "fec763a17f30559a1360cc9a42a8971280859dea8b0fb4a203215689ff919e12",
+		1800: "bd73724acdf665efe4cba1472edafc3cf171ab85c6aabe2e6f65d3b5803d8839",
+		2000: "31ddb0cf589ed9bbf11323b2dcb2edae0e0b5597f8f21e5a0625b0dea8f878c0",
 	}
 	var elapsed [2]time.Duration
 	var nonzeroAudioSamples uint64

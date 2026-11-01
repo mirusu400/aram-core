@@ -92,8 +92,10 @@ const (
 	ktfJavaTimerExecuted     = uint8(2)
 	ktfJavaTimerCancelled    = uint8(3)
 
+	// KWIS EventQueue key event types, as Card.keyNotify receives them.
 	KeyPressed  = uint32(1)
 	KeyReleased = uint32(2)
+	KeyRepeated = uint32(3)
 
 	ktfDialogTypeNone     = int32(0)
 	ktfDialogTypeOK       = int32(1)
@@ -136,7 +138,6 @@ type Runtime struct {
 
 	mainThreadLivenessCompat bool
 	dataInputStreamJavaABI   bool
-	cletJavaInputEdges       bool
 	makjangCopyGuard         bool
 	astonishiaDecisionLabels bool
 

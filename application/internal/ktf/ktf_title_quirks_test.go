@@ -37,36 +37,6 @@ func TestKTFInitialPhoneNumberOverrideMatchesOnlyHeroLoreFiveBypassBuild(t *test
 	}
 }
 
-func TestKTFCletJavaInputEdgesMatchOnlyChronosWingBuilds(t *testing.T) {
-	if len(quirkdb.KTFCletJavaInputEdges) != 2 {
-		t.Fatalf("Chronos Wing input-edge entries = %d", len(quirkdb.KTFCletJavaInputEdges))
-	}
-	for _, entry := range quirkdb.KTFCletJavaInputEdges {
-		descriptor := ktf.Descriptor{
-			AID:       entry.AID,
-			MainClass: entry.MainClass,
-		}
-		if !resolveCletJavaInputEdges(descriptor, entry.ClientSHA256) {
-			t.Fatalf("Chronos Wing AID %s did not select Java input edges", entry.AID)
-		}
-		for _, changed := range []struct {
-			name string
-			desc ktf.Descriptor
-			hash [sha256.Size]byte
-		}{
-			{name: "aid", desc: ktf.Descriptor{AID: "other", MainClass: descriptor.MainClass}, hash: entry.ClientSHA256},
-			{name: "main class", desc: ktf.Descriptor{AID: descriptor.AID, MainClass: "Other"}, hash: entry.ClientSHA256},
-			{name: "client", desc: descriptor, hash: sha256.Sum256([]byte("different client"))},
-		} {
-			t.Run(entry.AID+"/"+changed.name, func(t *testing.T) {
-				if resolveCletJavaInputEdges(changed.desc, changed.hash) {
-					t.Fatal("unrelated title selected Java Clet input edges")
-				}
-			})
-		}
-	}
-}
-
 func TestKTFJavaImageOriginMatchesOnlySuhoziBuild(t *testing.T) {
 	entry := quirkdb.KTFJavaImageOrigins[0]
 	descriptor := ktf.Descriptor{AID: entry.Key.AID, MainClass: entry.Key.MainClass}
