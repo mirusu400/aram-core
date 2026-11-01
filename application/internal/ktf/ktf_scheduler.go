@@ -1486,6 +1486,7 @@ func (r *Runtime) DrainServiceEvents(now time.Duration) error {
 					if clip := r.wipicMediaClips[handle]; clip != nil && !clip.repeat {
 						clip.state = 0
 						clip.rewindPending = true
+						clip.endedUnstopped = true
 						r.tracef("wipic_media_complete:handle=0x%08x", handle)
 						if clip.callback != 0 {
 							r.pendingMediaCallbacks = append(r.pendingMediaCallbacks,

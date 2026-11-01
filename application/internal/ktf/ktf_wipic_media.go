@@ -515,6 +515,7 @@ func ktfWIPICMediaClearData(
 	clip.state = 0
 	clip.repeat = false
 	clip.rewindPending = false
+	clip.endedUnstopped = false
 	return 0, nil
 }
 
@@ -547,6 +548,7 @@ func ktfWIPICMediaPlay(
 	clip.state = 1
 	clip.repeat = repeat != 0
 	clip.rewindPending = false
+	clip.endedUnstopped = false
 	runtime.queueWIPICMediaCallback(handle, guest.WIPIMediaStart)
 	runtime.tracef(
 		"wipic_media_play:handle=0x%08x:size=%d:repeat=%t",
@@ -614,13 +616,24 @@ func ktfWIPICMediaStop(
 	if clip == nil {
 		return ktfWIPICErrorInvalid, nil
 	}
-	if err := runtime.Services.Media.Stop(
-		runtime.ServiceOwner,
-		serviceID,
-	); err != nil {
-		return ktfWIPICErrorInvalid, nil
+	// A clip that ran out is already stopped in the mixer, but the title
+	// still has to hear about its stop. 렙업만이살길 answers the END callback
+	// with MC_mdaStop and frees the clip only in the STOP callback that
+	// follows; rejecting that stop leaked one clip per sound effect until
+	// the media pool ran out (issue #561). The acknowledgement is owed once
+	// per playback, so a title that stops again gets the plain rejection.
+	if clip.endedUnstopped {
+		clip.endedUnstopped = false
+		runtime.tracef("wipic_media_stop_ended:handle=0x%08x", handle)
+	} else {
+		if err := runtime.Services.Media.Stop(
+			runtime.ServiceOwner,
+			serviceID,
+		); err != nil {
+			return ktfWIPICErrorInvalid, nil
+		}
+		runtime.tracef("wipic_media_stop:handle=0x%08x:repeat=%t", handle, clip.repeat)
 	}
-	runtime.tracef("wipic_media_stop:handle=0x%08x:repeat=%t", handle, clip.repeat)
 	clip.state = 0
 	clip.repeat = false
 	clip.rewindPending = true

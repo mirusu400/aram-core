@@ -902,6 +902,10 @@ type ktfWIPICMediaClip struct {
 	// starts a fresh sound instead of appending to the one that just
 	// finished; see ktfWIPICMediaPutData.
 	rewindPending bool
+	// endedUnstopped marks a clip whose playback ran out on its own and that
+	// the title has not stopped since. MC_mdaStop on such a clip still owes
+	// the title its STOP callback; see ktfWIPICMediaStop.
+	endedUnstopped bool
 	// lastTracedState dedups the GetState host trace: a title polls GetState in
 	// a tight loop, so only a change (notably the playing->stopped edge when an
 	// effect finishes) is worth an entry.
