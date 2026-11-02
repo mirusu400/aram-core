@@ -340,6 +340,8 @@ func (m *gvmMachine) LoadState(input io.Reader) error {
 	m.vm, m.timer = candidate.vm, candidate.timer
 	m.clock, m.random = candidate.clock, candidate.random
 	m.display, m.mediaServices, m.frames = candidate.display, candidate.mediaServices, candidate.frames
+	m.hostRequests = candidate.hostRequests
+	m.requestIDs.nextSession()
 	m.state = state.Lifecycle
 	m.inputDispatches, m.lastInputCode = state.InputDispatches, state.LastInputCode
 	m.lastResult, m.lastInputResult = cpu.Result{}, cpu.Result{}
@@ -410,7 +412,7 @@ func (m *gvmMachine) newGVMStateCandidateLocked() (*gvmMachine, error) {
 		packageSGS: bytes.Clone(m.packageSGS), budget: m.budget,
 		operational: true, eventEntry: m.eventEntry, inputEntry: m.inputEntry,
 		persistent: m.persistent,
-		width:      m.width, height: m.height, originX: m.originX, originY: m.originY,
+		width:      m.width, height: m.height,
 		timerDrivenEvents: m.timerDrivenEvents,
 		northMediaSuffix:  m.northMediaSuffix, nomMediaTail: m.nomMediaTail,
 	}

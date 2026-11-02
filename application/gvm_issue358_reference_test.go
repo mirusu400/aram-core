@@ -49,11 +49,11 @@ func TestGVMIssue358RagnarokStartsAndAcceptsSelect(t *testing.T) {
 			after = fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer()))
 		}
 	}
-	if got, want := machine.Framebuffer().Bounds().Size(), image.Pt(120, 120); got != want {
+	if got, want := machine.Framebuffer().Bounds().Size(), image.Pt(int(operationalGVMWidth), int(operationalGVMHeight)); got != want {
 		t.Fatalf("canvas = %v, want %v", got, want)
 	}
-	const initialHash = "51e4461e47c271158fc4213f32d8ac710ee6b3199b3c9ae4411d8ffd10544092"
-	const selectedHash = "41351d1a20e6daba17cd25698d649ff71c62f63809c4b3306e867213e9fee163"
+	const initialHash = "0e1b4a7a70415173c3b92679fe2d8b0d8b53bc55739c931bdd55baa86da6e621"
+	const selectedHash = "baa20aeb2369c06e31cdf133f8574df6d20a132d7f1e3e84013f06e4c7357897"
 	if before != initialHash || after != selectedHash {
 		t.Fatalf("initial/selected frame hashes = %s/%s, want %s/%s", before, after, initialHash, selectedHash)
 	}

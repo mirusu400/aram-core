@@ -164,6 +164,38 @@ audio, vibration, browser, network, and system-information families.
 exclusive, reversed bounds are normalized, and equal bounds do not consume a
 draw.
 
+## Versions 1 and 2 operational profile
+
+These rules come from static analysis of the reference GVM2X emulator
+(`Emulator.EXE` 2.0.6 build 040328; the supplied expiry-patched copy hashes to
+`755666796891c4157094c37d3395aacded8c206de3c798f2317677288af8384f`). The
+emulator was read, never run.
+
+- **LCD size.** The emulator's loader (`sub_41dfd0`) seeds reserved symbols
+  0..6, 9, 10 and 15, writing the configured LCD width into symbol 1 and height
+  into symbol 2. Titles lay their screens out from those two words. The machine
+  applies `PrepareGVMScalarPrefix` to every image with at least 16 symbols and
+  runs all qualified titles at 128x160 with no host origin offset. Earlier
+  profiles left both words at zero, which made titles centre on the origin
+  (hence the old 120x80 window shifted by 60/40) and divide by zero.
+- **Events.** Titles marked timer-driven dispatch the event entry only when a
+  timer slot is due. The others still run it every frame: they also drive
+  themselves from the fixed timer (`94`), which the timer boundary does not
+  deliver yet.
+- **Media neighbours.** Opcode `81` adds the element to the record pointer
+  without bounding it. File records point into the loaded image and writable
+  records are packed in index order in a 16 KiB RAM arena, so a read past the
+  end returns the next image byte, or the next non-empty arena record, then the
+  arena's zero tail.
+- **Sprites.** The sprite entry points ignore a kind outside 2..8 and draw
+  nothing for a zero width or height read from the header.
+- **Ellipses.** Opcode `65` fills (one span per row) and `64` outlines, both
+  with the native midpoint decision values.
+- **Leaving the title.** `c4` copies a NUL-terminated media string, records a
+  browser request and stops the machine; `c5` stops it. Both reach the host
+  through `core.ExternalRequestMachine`. Network requests (`c3`) remain
+  unsupported and fault with their offset.
+
 ## Runtime behavior
 
 ### Time, timers, and events

@@ -41,18 +41,98 @@ func TestDisplayPointUsesExplicitColorWithoutChangingActiveColor(t *testing.T) {
 	}
 }
 
-func TestDisplayEllipsePlotsCardinalPoints(t *testing.T) {
-	d := newTestDisplay(t, 11, 11, DisplayOrientationDefault, testPalette{failSelector: -1}, new(frameCollector))
-	if err := d.SelectGVMColor(7); err != nil {
-		t.Fatal(err)
+// The masks follow the GVM2X midpoint ellipses: opcode65 fills one span per
+// row and opcode64 plots four symmetric points per step, including the sparse
+// steep region and the single point a zero vertical radius leaves.
+func TestDisplayEllipseMatchesNativeMidpointRasters(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		outline              bool
+		w, h                 int
+		x, y, radiusX, radii int16
+		want                 []string
+	}{
+		{"fill wide", false, 11, 9, 5, 4, 4, 3, []string{
+			"...........", "...#####...", "..#######..", ".#########.", ".#########.",
+			".#########.", "..#######..", "...#####...", "...........",
+		}},
+		{"outline wide", true, 11, 9, 5, 4, 4, 3, []string{
+			"...........", "...#####...", "..#.....#..", ".#.......#.", ".#.......#.",
+			".#.......#.", "..#.....#..", "...#####...", "...........",
+		}},
+		{"fill tall", false, 9, 11, 4, 5, 2, 4, []string{
+			".........", "....#....", "...###...", "..#####..", "..#####..", "..#####..",
+			"..#####..", "..#####..", "...###...", "....#....", ".........",
+		}},
+		{"outline tall", true, 9, 11, 4, 5, 2, 4, []string{
+			".........", "....#....", "...#.#...", "..#...#..", "..#...#..", "..#...#..",
+			"..#...#..", "..#...#..", "...#.#...", "....#....", ".........",
+		}},
+		{"zero horizontal radius", true, 7, 7, 3, 3, 0, 2, []string{
+			".......", "...#...", "...#...", "...#...", "...#...", "...#...", ".......",
+		}},
+		{"zero vertical radius", false, 7, 7, 3, 3, 2, 0, []string{
+			".......", ".......", ".......", "...#...", ".......", ".......", ".......",
+		}},
+		{"negative radii", true, 13, 7, 6, 3, -5, -2, []string{
+			".............", "....#####....", "...#.....#...", "..#.......#..",
+			"...#.....#...", "....#####....", ".............",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDisplay(t, tc.w, tc.h, DisplayOrientationDefault, testPalette{failSelector: -1}, new(frameCollector))
+			if err := d.SelectGVMColor(7); err != nil {
+				t.Fatal(err)
+			}
+			draw := d.DrawGVMEllipse
+			if tc.outline {
+				draw = d.DrawGVMEllipseOutline
+			}
+			if err := draw(tc.x, tc.y, tc.radiusX, tc.radii); err != nil {
+				t.Fatal(err)
+			}
+			for row := 0; row < tc.h; row++ {
+				got := make([]byte, tc.w)
+				for column := range got {
+					got[column] = '.'
+					if d.drawing.pixels[row*tc.w+column] == 7 {
+						got[column] = '#'
+					}
+				}
+				if string(got) != tc.want[row] {
+					t.Fatalf("row %d = %s, want %s", row, got, tc.want[row])
+				}
+			}
+		})
 	}
-	if err := d.DrawGVMEllipse(5, 5, 3, 2); err != nil {
-		t.Fatal(err)
-	}
-	for _, point := range [][2]int{{2, 5}, {8, 5}, {5, 3}, {5, 7}} {
-		if got := d.drawing.pixels[point[1]*11+point[0]]; got != 7 {
-			t.Fatalf("pixel %v = %d", point, got)
+}
+
+// The native sprite entry points ignore a kind outside 2..8 and draw nothing
+// for a zero width or height read from the header, even when the media record
+// ends right after the width byte.
+func TestDisplaySpriteEntryPointsSkipWhatNativeSkips(t *testing.T) {
+	for _, resource := range [][]byte{{5, 0}, {8, 0, 1, 0, 0}, {8, 1, 0, 0, 0}, {9, 1, 1, 0, 0, 0}, {1}} {
+		d := newTestDisplay(t, 3, 3, DisplayOrientationDefault, testPalette{failSelector: -1}, new(frameCollector))
+		draws := []func() error{
+			func() error { return d.DrawGVMSprite(resource, 0, 0) },
+			func() error { return d.DrawGVMTransformedSprite(resource, 0, 0, true) },
+			func() error { return d.DrawGVMSpriteWithPalette(resource, []byte{1, 2}, 0, 0) },
+			func() error { return d.DrawGVMTransformedSpriteWithPalette(resource, []byte{1, 2}, 0, 0, false) },
 		}
+		for index, draw := range draws {
+			if err := draw(); err != nil {
+				t.Fatalf("resource % x entry %d: %v", resource, index, err)
+			}
+		}
+		for _, pixel := range d.drawing.pixels {
+			if pixel != 0 {
+				t.Fatalf("resource % x drew %v", resource, d.drawing.pixels)
+			}
+		}
+	}
+	d := newTestDisplay(t, 3, 3, DisplayOrientationDefault, testPalette{failSelector: -1}, new(frameCollector))
+	if err := d.DrawGVMSprite([]byte{8, 2, 1, 0, 0, 1}, 0, 0); !errors.Is(err, errTruncatedSprite) {
+		t.Fatalf("a drawable but truncated sprite = %v, want errTruncatedSprite", err)
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"math"
 	"sync"
 
 	"github.com/mirusu400/aram-core/gvm"
@@ -256,42 +255,146 @@ func (d *DisplayAdapter) DrawGVMEllipse(x, y, radiusX, radiusY int16) error {
 		return nil
 	}
 	cx, cy := int(x)+d.originX, int(y)+d.originY
-	rx, ry := int(radiusX), int(radiusY)
-	if rx < 0 {
-		rx = -rx
-	}
-	if ry < 0 {
-		ry = -ry
-	}
-	if rx == 0 {
-		d.drawVertical(cy-ry, cy+ry, cx)
+	// Native opcode65 fills one horizontal span per row on each side.
+	fillGVMEllipse(int(radiusX), int(radiusY), func(dx, dy int) {
+		d.drawHorizontal(cx-dx, cx+dx, cy+dy)
+		d.drawHorizontal(cx-dx, cx+dx, cy-dy)
+	})
+	return nil
+}
+
+// DrawGVMEllipseOutline plots opcode64's four symmetric outline points per
+// step of the native midpoint ellipse.
+func (d *DisplayAdapter) DrawGVMEllipseOutline(x, y, radiusX, radiusY int16) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.selector == 4 {
 		return nil
 	}
-	if ry == 0 {
-		d.drawHorizontal(cx-rx, cx+rx, cy)
-		return nil
-	}
-	if cx+rx < 0 || cx-rx >= d.drawing.width || cy+ry < 0 || cy-ry >= d.drawing.height {
-		return nil
-	}
+	cx, cy := int(x)+d.originX, int(y)+d.originY
 	plot := func(px, py int) {
 		if px >= 0 && px < d.drawing.width && py >= 0 && py < d.drawing.height {
 			d.drawing.pixels[py*d.drawing.width+px] = d.activeColor
 		}
 	}
-	for px := max(cx-rx, 0); px <= min(cx+rx, d.drawing.width-1); px++ {
-		fraction := float64(px-cx) / float64(rx)
-		dy := int(math.Round(float64(ry) * math.Sqrt(max(0, 1-fraction*fraction))))
-		plot(px, cy-dy)
-		plot(px, cy+dy)
-	}
-	for py := max(cy-ry, 0); py <= min(cy+ry, d.drawing.height-1); py++ {
-		fraction := float64(py-cy) / float64(ry)
-		dx := int(math.Round(float64(rx) * math.Sqrt(max(0, 1-fraction*fraction))))
-		plot(cx-dx, py)
-		plot(cx+dx, py)
-	}
+	outlineGVMEllipse(int(radiusX), int(radiusY), func(dx, dy int) {
+		plot(cx+dx, cy+dy)
+		plot(cx+dx, cy-dy)
+		plot(cx-dx, cy+dy)
+		plot(cx-dx, cy-dy)
+	})
 	return nil
+}
+
+// outlineGVMEllipse is the GVM2X midpoint ellipse behind opcode64. It reports
+// quadrant offsets (x, y) with the native double-precision decision values and
+// step order, including its sparse steep region; callers mirror each offset.
+func outlineGVMEllipse(radiusX, radiusY int, plot func(x, y int)) {
+	rx2 := radiusX * radiusX
+	ry := max(radiusY, -radiusY)
+	ry2 := ry * ry
+	x, y, yRef := 0, ry, ry
+	decision := float64((rx2 >> 2) + rx2*(1-y))
+	plot(0, y)
+	frx2, fry2 := float64(rx2), float64(ry2)
+	if (float64(ry)-0.5)*frx2 > fry2 {
+		stepX, accumulated, stepY := 3*ry2, ry2, rx2*(2-2*ry)
+		for {
+			x++
+			accumulated += ry2
+			if decision >= 0 {
+				y--
+				decision += float64(stepY + stepX)
+				yRef = y
+				stepY += 2 * rx2
+			} else {
+				decision += float64(stepX)
+			}
+			stepX += 2 * ry2
+			plot(x, y)
+			if float64(accumulated) >= (float64(yRef)-0.5)*frx2 {
+				break
+			}
+		}
+	}
+	if y <= 0 {
+		return
+	}
+	decision = float64(rx2*(y-1)*(y-1)) + fry2*(float64(x)+0.5)*(float64(x)+0.5) - float64(rx2*ry2)
+	stepX, stepY := 2*ry2*(x+1), rx2*(3-2*y)
+	for {
+		next := float64(stepY) + decision
+		if decision < 0 {
+			x++
+			next = float64(stepY+stepX) + decision
+			stepX += 2 * ry2
+		}
+		y--
+		stepY += 2 * rx2
+		plot(x, y)
+		if y <= 0 {
+			return
+		}
+		decision = next
+	}
+}
+
+// fillGVMEllipse is the GVM2X midpoint ellipse behind opcode65. It reports one
+// (half width, row offset) span per visited row in the native order.
+func fillGVMEllipse(radiusX, radiusY int, span func(x, y int)) {
+	rx2 := radiusX * radiusX
+	ry := max(radiusY, -radiusY)
+	ry2 := ry * ry
+	x, y, yRef := 0, ry, ry
+	decision := float64((rx2 >> 2) + rx2*(1-y))
+	span(0, y)
+	frx2, fry2 := float64(rx2), float64(ry2)
+	regionX := 0
+	if (float64(ry)-0.5)*frx2 > fry2 {
+		stepX, accumulated, stepY := 3*ry2, ry2, rx2*(2-2*ry)
+		for {
+			if decision >= 0 {
+				span(x, y)
+				x++
+				accumulated += ry2
+				decision += float64(stepY + stepX)
+				y--
+				stepX += 2 * ry2
+				yRef = y
+				stepY += 2 * rx2
+			} else {
+				x++
+				decision += float64(stepX)
+				accumulated += ry2
+				stepX += 2 * ry2
+			}
+			if float64(accumulated) >= (float64(yRef)-0.5)*frx2 {
+				break
+			}
+		}
+		regionX = x
+	}
+	span(x, y)
+	if y <= 0 {
+		return
+	}
+	decision = float64(rx2*(y-1)*(y-1)) + fry2*(float64(regionX)+0.5)*(float64(regionX)+0.5) - float64(rx2*ry2)
+	stepX, stepY := 2*ry2*(x+1), rx2*(3-2*y)
+	for {
+		next := float64(stepY) + decision
+		if decision < 0 {
+			x++
+			next = float64(stepY+stepX) + decision
+			stepX += 2 * ry2
+		}
+		y--
+		stepY += 2 * rx2
+		span(x, y)
+		if y <= 0 {
+			return
+		}
+		decision = next
+	}
 }
 
 func (d *DisplayAdapter) drawHorizontal(x1, x2, y int) {
@@ -314,9 +417,27 @@ func (d *DisplayAdapter) drawVertical(y1, y2, x int) {
 	}
 }
 
+// nativeSkipsGVMSprite reports resources the GVM2X sprite entry points
+// (0x4100f0 and 0x4107b0) draw nothing for. They ignore a kind outside 2..8,
+// and they read the width and height straight from the header without
+// bounding it by the record, so a zero width or height draws nothing even
+// when the record ends right after that byte.
+func nativeSkipsGVMSprite(resource []byte) bool {
+	if len(resource) == 0 {
+		return false
+	}
+	if resource[0] < 2 || resource[0] > 8 {
+		return true
+	}
+	return len(resource) > 1 && resource[1] == 0 || len(resource) > 2 && resource[2] == 0
+}
+
 func (d *DisplayAdapter) DrawGVMSprite(resource []byte, x, y int16) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if nativeSkipsGVMSprite(resource) {
+		return nil
+	}
 	sprite, err := decodeIndexedSprite(resource)
 	if err != nil {
 		return err
@@ -332,6 +453,9 @@ func (d *DisplayAdapter) DrawGVMSprite(resource []byte, x, y int16) error {
 func (d *DisplayAdapter) DrawGVMTransformedSprite(resource []byte, x, y int16, mirrorHorizontal bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if nativeSkipsGVMSprite(resource) {
+		return nil
+	}
 	sprite, err := decodeIndexedSprite(resource)
 	if err != nil {
 		return err
@@ -351,6 +475,9 @@ func (d *DisplayAdapter) DrawGVMTransformedSprite(resource []byte, x, y int16, m
 func (d *DisplayAdapter) DrawGVMSpriteWithPalette(resource, palette []byte, x, y int16) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if nativeSkipsGVMSprite(resource) {
+		return nil
+	}
 	sprite, err := decodeIndexedSprite(resource)
 	if err != nil {
 		return err
@@ -369,6 +496,9 @@ func (d *DisplayAdapter) DrawGVMSpriteWithPalette(resource, palette []byte, x, y
 func (d *DisplayAdapter) DrawGVMTransformedSpriteWithPalette(resource, palette []byte, x, y int16, mirrorHorizontal bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if nativeSkipsGVMSprite(resource) {
+		return nil
+	}
 	sprite, err := decodeIndexedSprite(resource)
 	if err != nil {
 		return err

@@ -54,45 +54,61 @@ const (
 	GVMShiningStoneOperationalSHA256  = "757c56d2ce1ea7616702676929f0bb90f67dedeeb491408cd0c56595876d4974"
 	defaultGVMWidth                   = int32(240)
 	defaultGVMHeight                  = int32(240)
-	operationalGVMWidth               = int32(120)
-	operationalGVMHeight              = int32(80)
-	defaultGVMBudget                  = uint64(1)
-	defaultGVMOperationalBudget       = uint64(1_000_000)
+	// The qualified titles lay out from the LCD size the loader seeds into
+	// reserved symbols 1 and 2; 128x160 is a handset size all of them support.
+	operationalGVMWidth         = int32(128)
+	operationalGVMHeight        = int32(160)
+	defaultGVMBudget            = uint64(1)
+	defaultGVMOperationalBudget = uint64(1_000_000)
 )
 
 type gvmOperationalConfig struct {
-	width             int32
-	height            int32
-	originX           int
-	originY           int
+	width  int32
+	height int32
+	// timerDrivenEvents dispatches the event entry only when a timer slot is
+	// due. Without it the event entry runs every frame, which titles that drive
+	// themselves from the fixed timer (94) still need.
 	timerDrivenEvents bool
 	northMediaSuffix  bool
 	nomMediaTail      bool
 }
 
+var operationalGVM = gvmOperationalConfig{width: operationalGVMWidth, height: operationalGVMHeight}
+
+func timerDrivenGVM() gvmOperationalConfig {
+	config := operationalGVM
+	config.timerDrivenEvents = true
+	return config
+}
+
+func gvmWith(update func(*gvmOperationalConfig)) gvmOperationalConfig {
+	config := operationalGVM
+	update(&config)
+	return config
+}
+
 var gvmOperationalCorpora = map[string]gvmOperationalConfig{
-	GVMOperationalSHA256: {width: operationalGVMWidth, height: operationalGVMHeight},
-	// HackSign draws its 120x68 playfield around (0,0), from (-60,-34).
-	GVMHackSignOperationalSHA256:      {width: operationalGVMWidth, height: operationalGVMHeight, originX: 60, originY: 34},
-	GVMRagnarokOperationalSHA256:      {width: 120, height: 120},
-	GVMNomOperationalSHA256:           {width: 120, height: 80, originX: 60, originY: 40, nomMediaTail: true},
-	GVMFruitOperationalSHA256:         {width: 120, height: 80, originX: 60, originY: 40},
-	GVMMashiOperationalSHA256:         {width: 120, height: 80, originX: 60, originY: 40},
-	GVMFantasyOperationalSHA256:       {width: 120, height: 80, originX: 60, originY: 40},
-	GVMStripOperationalSHA256:         {width: 120, height: 80, originX: 60, originY: 40, timerDrivenEvents: true},
-	GVMNorthOperationalSHA256:         {width: 120, height: 80, originX: 60, originY: 40, northMediaSuffix: true},
-	GVMNomAlternateSHA256:             {width: 120, height: 80, originX: 60, originY: 40, nomMediaTail: true},
-	GVMFruitAlternateSHA256:           {width: 120, height: 80, originX: 60, originY: 40},
-	GVMFantasyAlternateSHA256:         {width: 120, height: 80, originX: 60, originY: 40},
-	GVMNorthAlternateSHA256:           {width: 120, height: 80, originX: 60, originY: 40, northMediaSuffix: true},
-	GVMKangHoDongOperationalSHA256:    {width: 120, height: 80, originX: 60, originY: 40},
-	GVMCleanTimeOperationalSHA256:     {width: 120, height: 80, originX: 60, originY: 40},
-	GVMSwordMasterOperationalSHA256:   {width: 120, height: 80, originX: 60, originY: 40},
-	GVMCrowOperationalSHA256:          {width: 120, height: 80, originX: 60, originY: 40},
-	GVMHeroLegendOperationalSHA256:    {width: 120, height: 80, originX: 60, originY: 40},
-	GVMFightOinyongOperationalSHA256:  {width: 120, height: 80, originX: 60, originY: 40, timerDrivenEvents: true},
-	GVMFightOinyong2OperationalSHA256: {width: 120, height: 80, originX: 60, originY: 40, timerDrivenEvents: true},
-	GVMShiningStoneOperationalSHA256:  {width: 120, height: 80, originX: 60, originY: 40, timerDrivenEvents: true},
+	GVMOperationalSHA256:              operationalGVM,
+	GVMHackSignOperationalSHA256:      operationalGVM,
+	GVMRagnarokOperationalSHA256:      operationalGVM,
+	GVMNomOperationalSHA256:           gvmWith(func(c *gvmOperationalConfig) { c.nomMediaTail = true }),
+	GVMFruitOperationalSHA256:         operationalGVM,
+	GVMMashiOperationalSHA256:         operationalGVM,
+	GVMFantasyOperationalSHA256:       timerDrivenGVM(),
+	GVMStripOperationalSHA256:         timerDrivenGVM(),
+	GVMNorthOperationalSHA256:         gvmWith(func(c *gvmOperationalConfig) { c.northMediaSuffix = true }),
+	GVMNomAlternateSHA256:             gvmWith(func(c *gvmOperationalConfig) { c.nomMediaTail = true }),
+	GVMFruitAlternateSHA256:           operationalGVM,
+	GVMFantasyAlternateSHA256:         timerDrivenGVM(),
+	GVMNorthAlternateSHA256:           gvmWith(func(c *gvmOperationalConfig) { c.northMediaSuffix = true }),
+	GVMKangHoDongOperationalSHA256:    timerDrivenGVM(),
+	GVMCleanTimeOperationalSHA256:     operationalGVM,
+	GVMSwordMasterOperationalSHA256:   operationalGVM,
+	GVMCrowOperationalSHA256:          operationalGVM,
+	GVMHeroLegendOperationalSHA256:    operationalGVM,
+	GVMFightOinyongOperationalSHA256:  timerDrivenGVM(),
+	GVMFightOinyong2OperationalSHA256: timerDrivenGVM(),
+	GVMShiningStoneOperationalSHA256:  timerDrivenGVM(),
 }
 
 var (
@@ -377,10 +393,10 @@ type gvmMachine struct {
 	display                *gvmhost.DisplayAdapter
 	mediaServices          *gvmDecodedMediaServices
 	persistent             *gvmPersistentStore
+	hostRequests           *gvmHostRequests
+	requestIDs             externalRequestSequences
 	width                  int32
 	height                 int32
-	originX                int
-	originY                int
 	inputDispatches        uint64
 	lastInputCode          uint16
 	lastInputResult        cpu.Result
@@ -460,8 +476,6 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 		operational:       operational,
 		width:             config.width,
 		height:            config.height,
-		originX:           config.originX,
-		originY:           config.originY,
 		timerDrivenEvents: config.timerDrivenEvents,
 		northMediaSuffix:  config.northMediaSuffix,
 		nomMediaTail:      config.nomMediaTail,
@@ -508,6 +522,15 @@ func (m *gvmMachine) resetVMLocked() error {
 	if err != nil {
 		return fmt.Errorf("decode GVM execution image: %w", err)
 	}
+	if m.operational && len(image.Symbols) >= 16 {
+		// The native loader (sub_41dfd0) seeds the reserved symbols, including
+		// the LCD width and height titles lay their screens out from. Left at
+		// zero, titles centre on the origin and divide by the screen size.
+		image, err = PrepareGVMScalarPrefix(m.packageSGS, m.width, m.height)
+		if err != nil {
+			return fmt.Errorf("seed GVM reserved symbols: %w", err)
+		}
+	}
 	clock := new(shared.Clock)
 	if err := clock.Restore(shared.ClockState{WallEpochMillis: 0, TimezoneOffsetMins: 540, Locale: "ko-KR"}); err != nil {
 		return fmt.Errorf("initialize GVM diagnostic clock: %w", err)
@@ -530,7 +553,6 @@ func (m *gvmMachine) resetVMLocked() error {
 		}
 		display, err = gvmhost.NewDisplayAdapter(gvmhost.DisplayConfig{
 			Width: int(width), Height: int(height),
-			OriginX: m.originX, OriginY: m.originY,
 			Orientation: gvmhost.DisplayOrientationDefault,
 			Palette:     gvmhost.SKTCompatibilityPalette{}, Publisher: m.frames,
 			Text: textServices.Text, TextOwner: 1,
@@ -558,8 +580,15 @@ func (m *gvmMachine) resetVMLocked() error {
 			uint64(image.Media[160].BufferOffset)+14 > uint64(len(image.Buffer))) {
 			return errors.New("nom media boundary has unexpected source descriptor")
 		}
-		for i := range image.Media {
-			media[i] = gvm.MediaResource{Data: image.Media[i].Data}
+		for i, record := range image.Media {
+			media[i] = gvm.MediaResource{Data: record.Data}
+			switch {
+			case record.Mutable:
+				media[i].Backing = gvm.MediaBackingArena
+			case record.BufferOffset >= 0:
+				media[i].Backing = gvm.MediaBackingFile
+				media[i].FileOffset = record.BufferOffset
+			}
 		}
 		if m.northMediaSuffix {
 			media[502].VirtualSuffix = '|'
@@ -582,7 +611,14 @@ func (m *gvmMachine) resetVMLocked() error {
 		Random: random, RandomStream: "gvm",
 		Timer: timer,
 	}
+	var hostRequests *gvmHostRequests
 	if m.operational {
+		hostRequests, err = newGVMHostRequests(clock)
+		if err != nil {
+			return fmt.Errorf("initialize GVM host requests: %w", err)
+		}
+		services.HostRequest = hostRequests
+		services.EllipseOutline = display
 		services.DisplayClear = display
 		services.DisplayZero = display
 		services.DisplayFill = display
@@ -602,6 +638,7 @@ func (m *gvmMachine) resetVMLocked() error {
 		services.TextDraw = display
 		services.AudioReset = mediaServices
 		services.Media = media
+		services.MediaFile = image.Buffer
 		services.MediaLoad = mediaServices
 		services.DataRead = m.persistent
 		services.DataWrite = m.persistent
@@ -621,6 +658,8 @@ func (m *gvmMachine) resetVMLocked() error {
 	m.random = random
 	m.display = display
 	m.mediaServices = mediaServices
+	m.hostRequests = hostRequests
+	m.requestIDs.nextSession()
 	if m.operational {
 		m.mediaOutputRevision = mediaServices.revision
 		if m.audioGeneration == 0 {
@@ -695,7 +734,7 @@ func (m *gvmMachine) runOperationalLocked(ctx context.Context, dispatchEvent boo
 		completed++
 		if m.vm.Halted() {
 			m.lastResult = cpu.Result{Reason: cpu.StopExited, Instructions: completed, PC: uint32(m.vm.PC())}
-			return nil
+			return m.finishGVMCloseRequestLocked()
 		}
 	}
 	err := fmt.Errorf("operational GVM dispatch did not halt within %d instructions", m.budget)
@@ -824,10 +863,12 @@ func (m *gvmMachine) StepFrame(ctx context.Context) error {
 					return err
 				}
 			}
-			return m.advanceGVMAudioLocked(time.Second / 60)
-		}
-		if err := m.runOperationalLocked(ctx, true, -1); err != nil {
+		} else if err := m.runOperationalLocked(ctx, true, -1); err != nil {
 			return err
+		}
+		if m.state != machinecore.StateRunning {
+			// The dispatch asked the handset to exit or open the browser.
+			return nil
 		}
 		return m.advanceGVMAudioLocked(time.Second / 60)
 	}
@@ -1027,6 +1068,7 @@ func (m *gvmMachine) Close() error {
 	m.closed = true
 	m.vm = nil
 	m.state = machinecore.StateStopped
+	m.requestIDs.nextSession()
 	if err != nil {
 		return fmt.Errorf("close GVM audio: %w", err)
 	}

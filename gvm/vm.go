@@ -7,6 +7,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
+	"strconv"
 )
 
 var (
@@ -712,6 +714,25 @@ func (v *VM) Step() error {
 			return fail(err)
 		}
 		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4]) // Host hygiene only.
+	case 0x64:
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.ellipseOutline == nil {
+			return fail(ErrEllipseOutlineUnavailable)
+		}
+		if err := v.services.ellipseOutline.DrawGVMEllipseOutline(
+			int16(v.stack[v.depth-4]), int16(v.stack[v.depth-3]),
+			int16(v.stack[v.depth-2]), int16(v.stack[v.depth-1]),
+		); err != nil {
+			return fail(err)
+		}
+		v.depth -= 4
 		clear(v.stack[v.depth : v.depth+4])
 	case 0x66:
 		// Exact-build handler 0x418f10 reads the low byte of four words in stack
@@ -766,12 +787,13 @@ func (v *VM) Step() error {
 		v.services.textStyle.variant = uint8(v.stack[v.depth-1]) % 3
 		v.depth--
 		v.stack[v.depth] = 0 // Host hygiene only.
-	case 0x6a, 0x6b, 0x6c:
+	case 0x6a, 0x6b, 0x6c, 0x6d:
 		// Exact-build handler 0x419020 validates the top media index, then calls
 		// 0x40cce0 with signed x/y, the text resource, and a snapshot of the
 		// private mode/primary/alignment state. Opcode6a supplies no secondary
 		// selector and disables the outline/background path. Opcode6b
-		// forwards the secondary selector and enables that path.
+		// forwards the secondary selector and enables that path. Opcodes 6c and
+		// 6d repeat that pair with the mode fixed at 2.
 		if v.services == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
 			return v.fault
@@ -787,11 +809,12 @@ func (v *VM) Step() error {
 			return fail(ErrTextDrawUnavailable)
 		}
 		style := v.services.textStyle
+		background := op == 0x6b || op == 0x6d
 		secondary := uint8(0)
-		if op == 0x6b {
+		if background {
 			secondary = style.secondary
 		}
-		if op == 0x6c {
+		if op == 0x6c || op == 0x6d {
 			style.mode = 2
 		}
 		if err := v.services.textDraw.DrawGVMText(
@@ -801,7 +824,7 @@ func (v *VM) Step() error {
 			TextDrawStyle{
 				Mode: style.mode, Primary: style.primary,
 				Secondary: secondary, Alignment: style.variant,
-				Background: op == 0x6b,
+				Background: background,
 			},
 		); err != nil {
 			return fail(err)
@@ -1308,17 +1331,24 @@ func (v *VM) Step() error {
 			return fail(ErrInvalidMediaIndex)
 		}
 		payload := v.services.media[index]
-		if element < 0 || int(element) > len(payload) {
+		if element < 0 {
 			return fail(ErrInvalidElement)
 		}
 		var value byte
-		if int(element) == len(payload) {
-			if !v.services.mediaHasSuffix[index] || len(payload) == 0 || payload[len(payload)-1] != 0 {
+		switch {
+		case int(element) < len(payload):
+			value = payload[element]
+		case int(element) == len(payload) && v.services.mediaHasSuffix[index] &&
+			len(payload) != 0 && payload[len(payload)-1] == 0:
+			value = v.services.mediaSuffix[index]
+		default:
+			// The native handler never bounds the element, so it reads the
+			// byte stored next to the record.
+			neighbour, ok := v.services.mediaByteAfter(int(index), int(element))
+			if !ok {
 				return fail(ErrInvalidElement)
 			}
-			value = v.services.mediaSuffix[index]
-		} else {
-			value = payload[element]
+			value = neighbour
 		}
 		v.stack[v.depth-2] = uint16(int16(int8(value)))
 		v.depth--
@@ -1363,17 +1393,22 @@ func (v *VM) Step() error {
 			return fail(ErrInvalidMediaResource)
 		}
 		v.stack[v.depth-1] = parseGVMDecimal(payload[:end])
-	case 0x8a, 0x8b, 0x8c:
-		// GVM2X formats one, two, or three signed words into a media string.
+	case 0x8a, 0x8b, 0x8c, 0x8d, 0x8e:
+		// GVM2X formats one to five signed words into a media string.
 		if v.services == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
 			return v.fault
 		}
 		arguments := 1
-		if op == 0x8b {
+		switch op {
+		case 0x8b:
 			arguments = 2
-		} else if op == 0x8c {
+		case 0x8c:
 			arguments = 3
+		case 0x8d:
+			arguments = 4
+		case 0x8e:
+			arguments = 5
 		}
 		if v.depth < 2+arguments {
 			return fail(ErrStackUnderflow)
@@ -1394,20 +1429,204 @@ func (v *VM) Step() error {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
 			return v.fault
 		}
-		var formatted string
-		if arguments == 1 {
-			formatted = fmt.Sprintf(string(format), int16(v.stack[v.depth-1]))
-		} else if arguments == 2 {
-			formatted = fmt.Sprintf(string(format), int16(v.stack[v.depth-2]), int16(v.stack[v.depth-1]))
-		} else {
-			formatted = fmt.Sprintf(string(format), int16(v.stack[v.depth-3]), int16(v.stack[v.depth-2]), int16(v.stack[v.depth-1]))
+		values := make([]any, arguments)
+		for i := range values {
+			values[i] = int16(v.stack[v.depth-arguments+i])
 		}
+		formatted := fmt.Sprintf(string(format), values...)
 		if len(formatted) >= 256 {
 			return fail(ErrInvalidMediaResource)
 		}
 		v.services.media[destination] = append([]byte(formatted), 0)
 		v.depth -= 2 + arguments
 		clear(v.stack[v.depth : v.depth+2+arguments])
+	case 0x84:
+		// sprintf("%d") of the signed top word into the media record below it,
+		// through the native resize-then-strcpy path. Pops both words.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int(int16(v.stack[v.depth-2]))
+		if index < 0 || index >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		v.storeMediaString(index, strconv.AppendInt(nil, int64(int16(v.stack[v.depth-1])), 10))
+		v.depth -= 2
+		clear(v.stack[v.depth : v.depth+2])
+	case 0x87, 0x88:
+		// Copy bytes between a media record and a tagged word address plus a
+		// signed byte offset. Stack: address, byte offset, media index, count.
+		// 87 resizes the record to count and fills it from the address; 88
+		// copies count bytes of the record to the address. Pops four words.
+		if v.services == nil || v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 4 {
+			return fail(ErrStackUnderflow)
+		}
+		ref := v.stack[v.depth-4]
+		byteOffset := int(int16(v.stack[v.depth-3]))
+		index := int(int16(v.stack[v.depth-2]))
+		count := int(int16(v.stack[v.depth-1]))
+		if index < 0 || index >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		if count < 0 || op == 0x88 && count > len(v.services.media[index]) {
+			return fail(ErrInvalidElement)
+		}
+		tail, err := v.serviceTail(ref)
+		if err != nil {
+			return fail(err)
+		}
+		if byteOffset < 0 || byteOffset > len(tail) || count > len(tail)-byteOffset {
+			return fail(ErrInvalidAddress)
+		}
+		span := tail[byteOffset : byteOffset+count]
+		if op == 0x87 {
+			if resizeGVMMedia(v.services.media, index, count) {
+				copy(v.services.media[index], span)
+			}
+		} else {
+			copy(span, v.services.media[index][:count])
+		}
+		v.depth -= 4
+		clear(v.stack[v.depth : v.depth+4])
+	case 0x89:
+		// sprintf with one string argument: destination, format and argument
+		// media indices, argument on top. Pops all three.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 3 {
+			return fail(ErrStackUnderflow)
+		}
+		var records [3]int
+		for i := range records {
+			records[i] = int(int16(v.stack[v.depth-3+i]))
+			if records[i] < 0 || records[i] >= len(v.services.media) {
+				return fail(ErrInvalidMediaIndex)
+			}
+		}
+		formatted, ok := formatGVMString(v.services.media[records[1]], v.services.media[records[2]])
+		if !ok {
+			return fail(ErrInvalidMediaResource)
+		}
+		v.storeMediaString(records[0], formatted)
+		v.depth -= 3
+		clear(v.stack[v.depth : v.depth+3])
+	case 0xa5, 0xa6:
+		// Replace an angle in degrees with 100*sin (a5) or 100*cos (a6),
+		// rounded half up, from the native 0..90 degree table.
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		angle := int(int16(v.stack[v.depth-1])) % 360
+		if angle < 0 {
+			angle += 360
+		}
+		if op == 0xa6 {
+			angle = (angle + 90) % 360
+		}
+		v.stack[v.depth-1] = uint16(gvmSine(angle))
+	case 0xae, 0xb0:
+		// Replace the top three signed words with their maximum (ae) or
+		// minimum (b0).
+		if v.depth < 3 {
+			return fail(ErrStackUnderflow)
+		}
+		result := int16(v.stack[v.depth-3])
+		for _, word := range v.stack[v.depth-2 : v.depth] {
+			value := int16(word)
+			if op == 0xae && value > result || op == 0xb0 && value < result {
+				result = value
+			}
+		}
+		v.depth -= 2
+		v.stack[v.depth-1] = uint16(result)
+		clear(v.stack[v.depth : v.depth+2])
+	case 0xb1, 0xb2:
+		// Replace a tagged word-array address and a count with the index of
+		// the first largest (b1) or smallest (b2) signed element.
+		if v.services == nil || v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		count := int(int16(v.stack[v.depth-1]))
+		words, err := v.serviceSpan(v.stack[v.depth-2], 2*uint64(max(count, 1)))
+		if err != nil {
+			return fail(err)
+		}
+		best, bestIndex := int16(binary.LittleEndian.Uint16(words)), 0
+		for i := 1; i < count; i++ {
+			value := int16(binary.LittleEndian.Uint16(words[2*i:]))
+			if op == 0xb1 && value > best || op == 0xb2 && value < best {
+				best, bestIndex = value, i
+			}
+		}
+		v.depth--
+		v.stack[v.depth-1] = uint16(bestIndex)
+		v.stack[v.depth] = 0
+	case 0xb7:
+		// Replace centre, value and radius with whether the value lies strictly
+		// inside (centre-radius, centre+radius), without 16-bit wrap.
+		if v.depth < 3 {
+			return fail(ErrStackUnderflow)
+		}
+		centre := int(int16(v.stack[v.depth-3]))
+		value := int(int16(v.stack[v.depth-2]))
+		radius := int(int16(v.stack[v.depth-1]))
+		inside := uint16(0)
+		if centre-radius < value && value < centre+radius {
+			inside = 1
+		}
+		v.depth -= 2
+		v.stack[v.depth-1] = inside
+		clear(v.stack[v.depth : v.depth+2])
+	case 0xc4, 0xc5:
+		// c4 opens the handset browser at the NUL-terminated URL in the top
+		// media record and c5 exits. Both end the dispatch: the native handler
+		// points the PC at a halt byte and the host loop then stops the script.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.services.hostRequest == nil {
+			return fail(ErrHostRequestUnavailable)
+		}
+		if op == 0xc5 {
+			if err := v.services.hostRequest.RequestGVMExit(); err != nil {
+				return fail(err)
+			}
+			v.halted = true
+			break
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int(int16(v.stack[v.depth-1]))
+		if index < 0 || index >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		record := v.services.media[index]
+		end := bytes.IndexByte(record, 0)
+		if end <= 0 {
+			return fail(ErrInvalidMediaResource)
+		}
+		if err := v.services.hostRequest.RequestGVMBrowser(string(record[:end])); err != nil {
+			return fail(err)
+		}
+		v.depth--
+		v.stack[v.depth] = 0
+		v.halted = true
 	case 0x9d, 0x9e, 0x9f:
 		if v.services == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
@@ -2344,6 +2563,61 @@ func (v *VM) Step() error {
 		offset := 2 * int(element)
 		binary.LittleEndian.PutUint16(destinationRegion[offset:offset+2], value)
 		v.pc += 3
+	case 0x23, 0x24, 0x25, 0x26, 0x28, 0x2a, 0x2d:
+		// Copy one word between two symbol elements. The operands address the
+		// destination first, then the source; see symbolCopyModes.
+		modes := symbolCopyModes[op]
+		width := modes[0].width() + modes[1].width()
+		if len(v.code)-v.pc < width {
+			return fail(ErrTruncated)
+		}
+		operands := v.code[v.pc : v.pc+width]
+		destination, err := v.symbolWordOperand(modes[0], operands)
+		if err != nil {
+			return fail(err)
+		}
+		source, err := v.symbolWordOperand(modes[1], operands[modes[0].width():])
+		if err != nil {
+			return fail(err)
+		}
+		// Read before writing: either side may alias this instruction.
+		value := binary.LittleEndian.Uint16(source)
+		binary.LittleEndian.PutUint16(destination, value)
+		v.pc += width
+	case 0x37, 0x38:
+		// Add a signed byte immediate to an element selected through an index:
+		// 37 reads (symbol, index symbol, index element, immediate) and 38
+		// reads (symbol, first-word index symbol, immediate).
+		mode := symbolIndexed
+		if op == 0x38 {
+			mode = symbolFirstIndexed
+		}
+		width := mode.width() + 1
+		if len(v.code)-v.pc < width {
+			return fail(ErrTruncated)
+		}
+		operands := v.code[v.pc : v.pc+width]
+		delta := uint16(int16(int8(operands[width-1])))
+		word, err := v.symbolWordOperand(mode, operands)
+		if err != nil {
+			return fail(err)
+		}
+		binary.LittleEndian.PutUint16(word, binary.LittleEndian.Uint16(word)+delta)
+		v.pc += width
+	case 0x48:
+		// Store the top word into an indexed element without popping it.
+		if len(v.code)-v.pc < 3 {
+			return fail(ErrTruncated)
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		word, err := v.symbolWordOperand(symbolIndexed, v.code[v.pc:v.pc+3])
+		if err != nil {
+			return fail(err)
+		}
+		binary.LittleEndian.PutUint16(word, v.stack[v.depth-1])
+		v.pc += 3
 	case 0x2c:
 		// Store a signed byte immediate into an array element selected by the
 		// first word of another symbol. The native handler consumes the array
@@ -2619,6 +2893,197 @@ func validGVMDecimalFormat(format []byte, arguments int) bool {
 		}
 	}
 	return count == arguments
+}
+
+// storeMediaString mirrors the native resize-then-strcpy result path: the
+// record is resized to hold text and its NUL, and a failed resize leaves the
+// record unchanged.
+func (v *VM) storeMediaString(index int, text []byte) {
+	if resizeGVMMedia(v.services.media, index, len(text)+1) {
+		record := v.services.media[index]
+		copy(record, text)
+		record[len(text)] = 0
+	}
+}
+
+// formatGVMString mirrors the GVM2X one-string sprintf behind opcode89. A
+// conversion takes '-' and '0' flags, a field width and a precision and then
+// 's'; any other conversion character is copied literally. Output stops at
+// 255 bytes. Both records must hold a NUL inside their current length, except
+// that a precision may bound an unterminated argument.
+func formatGVMString(format, argument []byte) ([]byte, bool) {
+	end := bytes.IndexByte(format, 0)
+	if end < 0 {
+		return nil, false
+	}
+	format = format[:end]
+	text, terminated := argument, false
+	if n := bytes.IndexByte(argument, 0); n >= 0 {
+		text, terminated = argument[:n], true
+	}
+	const limit = 255
+	out := make([]byte, 0, limit)
+	pad := func(c byte, n int) {
+		for ; n > 0; n-- {
+			out = append(out, c)
+		}
+	}
+	digit := func(c byte) bool { return c >= '0' && c <= '9' }
+	for i := 0; i < len(format) && len(out) < limit; i++ {
+		if format[i] != '%' {
+			out = append(out, format[i])
+			continue
+		}
+		left, zero, width, precision := false, false, 0, -1
+	spec:
+		for i++; i < len(format); i++ {
+			switch c := format[i]; {
+			case c == '-':
+				left = true
+			case c == '0':
+				zero = true
+			case c == '.':
+				precision = 0
+				for i+1 < len(format) && digit(format[i+1]) {
+					i++
+					precision = 10*precision + int(format[i]-'0')
+				}
+			case c >= '1' && c <= '9':
+				width = 0
+				for ; i < len(format) && digit(format[i]); i++ {
+					width = 10*width + int(format[i]-'0')
+				}
+				i--
+			case c == 's':
+				s := text
+				if precision >= 0 && precision < len(s) {
+					s = s[:precision]
+				} else if !terminated {
+					return nil, false
+				}
+				switch {
+				case left:
+				case zero:
+					pad('0', width-len(s))
+				default:
+					pad(' ', width-len(s))
+				}
+				out = append(out, s...)
+				if left {
+					pad(' ', width-len(s))
+				}
+				break spec
+			default:
+				out = append(out, c)
+				break spec
+			}
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, true
+}
+
+// gvmSine is the native 100*sin table: degrees 0..90 rounded half up and
+// mirrored into the other quadrants. angle must be in 0..359.
+func gvmSine(angle int) int16 {
+	quadrant := func(degrees int) int16 {
+		return int16(math.Floor(100*math.Sin(float64(degrees)*math.Pi/180) + 0.5))
+	}
+	switch {
+	case angle <= 90:
+		return quadrant(angle)
+	case angle <= 180:
+		return quadrant(180 - angle)
+	case angle <= 270:
+		return -quadrant(angle - 180)
+	default:
+		return -quadrant(360 - angle)
+	}
+}
+
+// symbolOperandMode is one way a GVM2X copy handler addresses a symbol word.
+type symbolOperandMode uint8
+
+const (
+	// symbolFixed reads (symbol, element).
+	symbolFixed symbolOperandMode = iota
+	// symbolFirst reads (symbol) and addresses element zero.
+	symbolFirst
+	// symbolIndexed reads (symbol, index symbol, index element) and uses the
+	// signed word stored there as the element.
+	symbolIndexed
+	// symbolFirstIndexed reads (symbol, index symbol) and uses the signed first
+	// word of the index symbol as the element.
+	symbolFirstIndexed
+)
+
+func (m symbolOperandMode) width() int {
+	switch m {
+	case symbolFirst:
+		return 1
+	case symbolIndexed:
+		return 3
+	default:
+		return 2
+	}
+}
+
+// symbolCopyModes lists the destination and source modes of the word-copy
+// handlers that are table-driven here.
+var symbolCopyModes = map[byte][2]symbolOperandMode{
+	0x23: {symbolIndexed, symbolIndexed},
+	0x24: {symbolIndexed, symbolFirstIndexed},
+	0x25: {symbolIndexed, symbolFixed},
+	0x26: {symbolIndexed, symbolFirst},
+	0x28: {symbolFirstIndexed, symbolIndexed},
+	0x2a: {symbolFirstIndexed, symbolFixed},
+	0x2d: {symbolFixed, symbolIndexed},
+}
+
+// symbolWordOperand resolves one copy operand to its two-byte word.
+func (v *VM) symbolWordOperand(mode symbolOperandMode, operands []byte) ([]byte, error) {
+	symbol := int(operands[0])
+	switch mode {
+	case symbolFirst:
+		if symbol >= len(v.symbols) {
+			return nil, ErrInvalidSymbol
+		}
+		if len(v.symbols[symbol]) < 2 {
+			return nil, ErrInvalidSymbolRegion
+		}
+		return v.symbols[symbol][:2], nil
+	case symbolIndexed:
+		index, err := v.symbolWord(int(operands[1]), int(operands[2]))
+		if err != nil {
+			return nil, err
+		}
+		return v.symbolWord(symbol, int(int16(binary.LittleEndian.Uint16(index))))
+	case symbolFirstIndexed:
+		index, err := v.symbolWordOperand(symbolFirst, operands[1:])
+		if err != nil {
+			return nil, err
+		}
+		return v.symbolWord(symbol, int(int16(binary.LittleEndian.Uint16(index))))
+	default:
+		return v.symbolWord(symbol, int(operands[1]))
+	}
+}
+
+// symbolWord returns symbol[element] within the native 255-element bound.
+func (v *VM) symbolWord(symbol, element int) ([]byte, error) {
+	if symbol >= len(v.symbols) {
+		return nil, ErrInvalidSymbol
+	}
+	region := v.symbols[symbol]
+	if len(region)%2 != 0 || len(region) > 510 {
+		return nil, ErrInvalidSymbolRegion
+	}
+	if element < 0 || element >= len(region)/2 {
+		return nil, ErrInvalidElement
+	}
+	return region[2*element : 2*element+2], nil
 }
 
 func resizeGVMMedia(media [][]byte, index, size int) bool {

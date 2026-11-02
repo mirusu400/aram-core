@@ -16,9 +16,9 @@ func TestGVMNewOperationalCorpora(t *testing.T) {
 	for _, tc := range []struct {
 		name, digest, first, after string
 	}{
-		{"nom", GVMNomOperationalSHA256, "b0965f771b5751c079c4dcb0206353997ef81297def6926fa8d595f462ed2e57", "ca01ef0c02026a3da37a1cf6a69d43541ebcfdd282d5436e769d5fb94247807c"},
-		{"fruit", GVMFruitOperationalSHA256, "557304040f245962d5b825014670e627a6059de30e1dfa76dfb764350f2c998e", "21bdf0b2ae6b9a9dc70ae9ccb6509d8d6dd61560c82eb063d726aad20c09cedc"},
-		{"mashi", GVMMashiOperationalSHA256, "4ac0c24bcded87a8ec4d713c6bd4c3e1ee07269155b6bb334a376592068ab815", "8a86dad2959c87a792ac29a239229332491bc6432bf3c53c9395902db1467749"},
+		{"nom", GVMNomOperationalSHA256, "c26eab371895ca07f442b67ed19cd5ebc0cea534632a9a996cb2a518e8cd7f66", "093620b85107d398a73df3e814c11cde3e0404c44ffa9067024fefb90eab471f"},
+		{"fruit", GVMFruitOperationalSHA256, "1410764797778f32f56fb368c010c509fbce47ddc6d45fc135e060a70ff43cb7", "3d77b02fabd6d0c75656ca7d8375bbf53a1b045c365989b74056325ba4214eed"},
+		{"mashi", GVMMashiOperationalSHA256, "8e62272cfb51cb5f202643b069d2c9fc317a5121b6291bb6553b94ff370640b3", "b3187a19b3128a9a3b68bac66f5b60e49f1f95d0120c0fc4dc1673f1045bb3f1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			machine := newGVMCorpusMachine(t, tc.digest)
@@ -43,10 +43,10 @@ func TestGVMAlternateOuterPackagesMatchQualifiedSGS(t *testing.T) {
 	for _, tc := range []struct {
 		name, digest, frame string
 	}{
-		{"nom", GVMNomAlternateSHA256, "b0965f771b5751c079c4dcb0206353997ef81297def6926fa8d595f462ed2e57"},
-		{"fruit", GVMFruitAlternateSHA256, "557304040f245962d5b825014670e627a6059de30e1dfa76dfb764350f2c998e"},
-		{"fantasy", GVMFantasyAlternateSHA256, "c20bf73ba70ef80c90f394651d20e20cbc02e7628cb9ad454cc6ace71feaa83e"},
-		{"north", GVMNorthAlternateSHA256, "5d6d64798c67f9187f0de2db624e5c3099ea83074924f1363ca58b0da8cff9ac"},
+		{"nom", GVMNomAlternateSHA256, "c26eab371895ca07f442b67ed19cd5ebc0cea534632a9a996cb2a518e8cd7f66"},
+		{"fruit", GVMFruitAlternateSHA256, "1410764797778f32f56fb368c010c509fbce47ddc6d45fc135e060a70ff43cb7"},
+		{"fantasy", GVMFantasyAlternateSHA256, "4da02bbb6369d4348bd5fa451a52ee339637f200f0440f09b8c909f45fd5455c"},
+		{"north", GVMNorthAlternateSHA256, "b3fd21c314c7048cd31de4f69fe8086e621fc52483e4c47cc32b4dab6989abb0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			machine := newGVMCorpusMachine(t, tc.digest)
@@ -65,14 +65,14 @@ func TestGVMExpandedOperationalCorpora(t *testing.T) {
 	for _, tc := range []struct {
 		name, digest, control, first, after string
 	}{
-		{"kang-ho-dong", GVMKangHoDongOperationalSHA256, "num2", "1d7d8a824a9142dd848dea5fd93fd2928744058369fd0cffc380f99f0b64b5f4", "80c40414cf957a978004840deaf0d3aa2fe7445b392cea2915ebc13351010cc0"},
-		{"clean-time", GVMCleanTimeOperationalSHA256, "select", "83d6cafd942a708017657123c75371139cba7bb05f09f06c3415229db271b2c0", "09d5ad8827a39c3e513e5ad7861f3d0f1ff3d2da892a6c130642c0fa0d234123"},
-		{"sword-master", GVMSwordMasterOperationalSHA256, "select", "77cf92d2436a8498497d9f843a2720b1b50322d6400d789484f14f129b55d203", "96c9e75318744bad5939659b1b0130b7e3d878455ebd0e2ba8c076070d1d2bb8"},
-		{"crow", GVMCrowOperationalSHA256, "select", "32992cc7aef3573b4fd459e19adec377b7f8905862bae85a545a89fe72fc5948", "e566f6bf76c66f3b62e16618918c5acdadc3952150523c373d44a32923ba0709"},
-		{"hero-legend", GVMHeroLegendOperationalSHA256, "select", "f59cdd5856a3c1155c36fdc2d1a291c9dac59146c4706853bbc91917b180fdcf", "155ec8e12778d36b35b736fe0eedf46f643335070fc5a1d0bbbb374bd129e9e1"},
-		{"fight-oinyong", GVMFightOinyongOperationalSHA256, "select", "4621348b398adc6ecf9b83e2f8f6db8524eca43e95e95483fde4fe48d610c117", "6e285b2bf3a510e945b67cef2f3dbd9157cfb478d2f661cfd12a99b9cb16a566"},
-		{"fight-oinyong-2", GVMFightOinyong2OperationalSHA256, "select", "4621348b398adc6ecf9b83e2f8f6db8524eca43e95e95483fde4fe48d610c117", "6e285b2bf3a510e945b67cef2f3dbd9157cfb478d2f661cfd12a99b9cb16a566"},
-		{"shining-stone", GVMShiningStoneOperationalSHA256, "select", "ec7f659a4f85af2708926fab1d7a614774e2bb0e54589e471868af01e6d2386a", "7d3c3d43671aa5ead50ca92572692da2657bc91fd15cd0cd2207d9c9db2ac8d7"},
+		{"kang-ho-dong", GVMKangHoDongOperationalSHA256, "num2", "a3ecaf3789f974a8d6dd844b349297ea2a14ea7d1bbe993dd92fea4ae3fa325b", "ecc87feb79eba79b2c89c90fb74bcf7359700dc9d640cfa20c1b389327538bfb"},
+		{"clean-time", GVMCleanTimeOperationalSHA256, "select", "0e626ad4f53c738099b238e6d417ca73325bcf821cf925e7102d9c37b9816be3", "1f8a199ca55c10aace75b2cf6513ff26b21aacd559d28d43b74144cf1424be62"},
+		{"sword-master", GVMSwordMasterOperationalSHA256, "select", "b3698e7f970f077582d5bcb9fb2eac688e77fe156cb54ca28366690fcb3b87b3", "234065642b908906d4f82190d2e97e2ada2b96f88688692113c1625eecd32e44"},
+		{"crow", GVMCrowOperationalSHA256, "select", "1b270fd9e954e206fa53e9a811782d16686a18a94e2377bbf96c751d96fe46f0", "dfddbd14d41af17c86e4fa1a387bfdcc68ddaa091b91584e40cafd303e54ca55"},
+		{"hero-legend", GVMHeroLegendOperationalSHA256, "select", "7f65a2f0b4c6905c8b1c45527c9af400fadb0228a1b9dc263713195ab589fc4e", "fa0a0afb1fe4a9269cc2be168fa44a3da93ce62a5cb2e5afa89f0ed82ef0fd1b"},
+		{"fight-oinyong", GVMFightOinyongOperationalSHA256, "select", "673d68fe5e816dbc3210beef054a2f2aaddcfa4c22eed8628f9aef8091dbbca0", "f335a62ebe7bb05ace932b53a1e2b14045e8c3a0608c8352647e1d7df3ef03ca"},
+		{"fight-oinyong-2", GVMFightOinyong2OperationalSHA256, "select", "673d68fe5e816dbc3210beef054a2f2aaddcfa4c22eed8628f9aef8091dbbca0", "f335a62ebe7bb05ace932b53a1e2b14045e8c3a0608c8352647e1d7df3ef03ca"},
+		{"shining-stone", GVMShiningStoneOperationalSHA256, "select", "d094f665c8b04ff244b1af11dcec280458b96423c62456ef3da294a7b4148e00", "2a8dd153bf6a1cdf94672ffc43e2a100be57dd7e2dff05c2d6e34179beefcda9"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			machine := newGVMCorpusMachine(t, tc.digest)
@@ -114,7 +114,7 @@ func TestGVMFantasyOperationalProgression(t *testing.T) {
 		t.Fatal(err)
 	}
 	stepGVMCorpusFrames(t, machine, 120)
-	if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != "c20bf73ba70ef80c90f394651d20e20cbc02e7628cb9ad454cc6ace71feaa83e" {
+	if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != "4da02bbb6369d4348bd5fa451a52ee339637f200f0440f09b8c909f45fd5455c" {
 		t.Fatalf("opening frame = %s", got)
 	}
 	pressGVMCorpusKey(t, machine, "select")
@@ -213,12 +213,12 @@ func TestGVMStripOperationalProgression(t *testing.T) {
 		t.Fatal(err)
 	}
 	stepGVMCorpusFrames(t, machine, 120)
-	if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != "d627990a4f5de40a0abecbed794fece6d55b55867ab9c5e170d8076a3e75262b" {
+	if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != "52229ee6a9c54190baee14e6393b4b6173b2adb016f186b3eaa2afe7f8c402fb" {
 		t.Fatalf("title frame = %s", got)
 	}
 	pressGVMCorpusKey(t, machine, "select")
 	stepGVMCorpusFrames(t, machine, 120)
-	if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != "9a70364bcb17078989e8970e8861e4d3715b3266508d1aecf55dedc3e57bffb6" {
+	if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != "835ac7e81586e2038f6c02b3c5f8bfc389fdd1263e49c9cd54dc50f269acf925" {
 		t.Fatalf("menu frame = %s", got)
 	}
 	before := brewFrameHash(machine.Framebuffer())
@@ -237,12 +237,12 @@ func TestGVMNorthOperationalProgression(t *testing.T) {
 	for _, tc := range []struct {
 		key, want string
 	}{
-		{"", "5d6d64798c67f9187f0de2db624e5c3099ea83074924f1363ca58b0da8cff9ac"},
-		{"select", "c3423f8c80d2dc34c100db7337c62f9ca41f5407c13166422589b713b9f0d5ff"},
-		{"up", "f612ff32cb3cfd3a297ad2ea8ad40edf53f031abb125a192b21f31f8d564e86e"},
-		{"down", "f612ff32cb3cfd3a297ad2ea8ad40edf53f031abb125a192b21f31f8d564e86e"},
-		{"num1", "f612ff32cb3cfd3a297ad2ea8ad40edf53f031abb125a192b21f31f8d564e86e"},
-		{"select", "ee0eec152db18170f4530907283b782b6677ce59987d03807599ab96c8e9c960"},
+		{"", "b3fd21c314c7048cd31de4f69fe8086e621fc52483e4c47cc32b4dab6989abb0"},
+		{"select", "ae4608207a3339164954a1ada01681bdd5c5a39576053133c87e10f943b32046"},
+		{"up", "35b9335fada7828861ae839da5a0339d90b8f8dd7275684460deee0c4a674b1c"},
+		{"down", "35b9335fada7828861ae839da5a0339d90b8f8dd7275684460deee0c4a674b1c"},
+		{"num1", "35b9335fada7828861ae839da5a0339d90b8f8dd7275684460deee0c4a674b1c"},
+		{"select", "c3d10f96ae2fcccfbaacd3f6a276999558d76101810afe94499dd052734859f2"},
 	} {
 		if tc.key != "" {
 			pressGVMCorpusKey(t, machine, tc.key)
@@ -279,7 +279,7 @@ func stepGVMCorpusFrames(t *testing.T, machine machinecore.Machine, frames int) 
 			t.Fatalf("frame %d: %v", frame, err)
 		}
 	}
-	if got := machine.Framebuffer(); got == nil || got.Bounds().Size() != image.Pt(120, 80) {
+	if got := machine.Framebuffer(); got == nil || got.Bounds().Size() != image.Pt(int(operationalGVMWidth), int(operationalGVMHeight)) {
 		t.Fatalf("frame bounds = %v", got)
 	}
 }

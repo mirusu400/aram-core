@@ -33,7 +33,9 @@ var (
 	ErrColorSelectUnavailable     = errors.New("gvm: drawing color selection service unavailable")
 	ErrRectangleDrawUnavailable   = errors.New("gvm: rectangle outline service unavailable")
 	ErrLineDrawUnavailable        = errors.New("gvm: line draw service unavailable")
-	ErrEllipseDrawUnavailable     = errors.New("gvm: ellipse outline service unavailable")
+	ErrEllipseDrawUnavailable     = errors.New("gvm: ellipse fill service unavailable")
+	ErrEllipseOutlineUnavailable  = errors.New("gvm: ellipse outline service unavailable")
+	ErrHostRequestUnavailable     = errors.New("gvm: host request service unavailable")
 	ErrRectangleFillUnavailable   = errors.New("gvm: rectangle fill service unavailable")
 	ErrTextDrawUnavailable        = errors.New("gvm: text draw service unavailable")
 	ErrDataReadUnavailable        = errors.New("gvm: persistent data read service unavailable")
@@ -196,9 +198,25 @@ type PointDrawSink interface {
 }
 
 // EllipseDrawSink receives the signed center and horizontal/vertical radii
-// forwarded by opcode65. It updates the indexed drawing buffer atomically.
+// forwarded by opcode65, whose native handler fills the ellipse with one
+// horizontal span per row. It updates the indexed drawing buffer atomically.
 type EllipseDrawSink interface {
 	DrawGVMEllipse(x, y, radiusX, radiusY int16) error
+}
+
+// EllipseOutlineSink accepts opcode64's signed centre and radii. The native
+// handler plots the same midpoint ellipse as opcode65 but only its outline.
+type EllipseOutlineSink interface {
+	DrawGVMEllipseOutline(x, y, radiusX, radiusY int16) error
+}
+
+// HostRequestSink receives the handset actions that end a GVM application.
+// Opcodec4 opens the handset browser at a URL and opcodec5 exits; both end the
+// current dispatch, after which the native runtime stops the script.
+// Implementations must complete atomically and must not reenter the VM.
+type HostRequestSink interface {
+	RequestGVMBrowser(url string) error
+	RequestGVMExit() error
 }
 
 // SpriteDrawSink accepts opcode6f's validated media payload and signed guest
@@ -271,7 +289,32 @@ type MediaResource struct {
 	// past a NUL-terminated mutable record. Normal resources leave it disabled.
 	VirtualSuffix    byte
 	HasVirtualSuffix bool
+	// Backing says where the native runtime keeps the record. Opcode81 does
+	// not bound its element against the record length, so a read past the end
+	// returns the byte the native runtime keeps next to the record.
+	Backing MediaBacking
+	// FileOffset locates a MediaBackingFile record inside ServiceConfig.MediaFile.
+	FileOffset int
 }
+
+// MediaBacking selects the native neighbour of a media record.
+type MediaBacking uint8
+
+const (
+	// MediaBackingDetached models no neighbour: reads past the end fault.
+	MediaBackingDetached MediaBacking = iota
+	// MediaBackingFile is a read-only record that points into the loaded SGS
+	// image, so the next bytes are the image bytes that follow it.
+	MediaBackingFile
+	// MediaBackingArena is a writable record copied into the native 16 KiB RAM
+	// arena. Arena records are packed in index order and a resize moves every
+	// later one, so the next bytes belong to the next arena record with data,
+	// and past the last one to the arena's unused, zero-filled tail.
+	MediaBackingArena
+)
+
+// mediaArenaSize bounds reads into the unused tail of the native RAM arena.
+const mediaArenaSize = 0x4000
 
 // MediaLoadSink accepts an independent copy of one validated media payload.
 // It owns codec/device policy. Mutating data cannot change VM-owned resources.
@@ -344,7 +387,11 @@ type ServiceConfig struct {
 	RectangleDraw RectangleDrawSink
 	LineDraw      LineDrawSink
 	PointDraw     PointDrawSink
-	EllipseDraw   EllipseDrawSink
+	// EllipseDraw fills (opcode65); EllipseOutline outlines (opcode64).
+	EllipseDraw    EllipseDrawSink
+	EllipseOutline EllipseOutlineSink
+	// HostRequest is borrowed. Opcodes c4/c5 forward a browser or exit request.
+	HostRequest HostRequestSink
 	// RectangleFill is borrowed. Opcode63 forwards four signed coordinates; the
 	// provider owns sorting, clipping, active color and drawing-buffer mutation.
 	RectangleFill RectangleFillSink
@@ -364,7 +411,10 @@ type ServiceConfig struct {
 	AudioReset AudioResetSink
 	// Media is copied at construction. MediaLoad is borrowed and receives a new
 	// independent payload copy for every opcode90 request.
-	Media     []MediaResource
+	Media []MediaResource
+	// MediaFile is the loaded SGS image that MediaBackingFile records point
+	// into. It is copied at construction.
+	MediaFile []byte
 	MediaLoad MediaLoadSink
 	DataRead  DataReadSink
 	DataWrite DataWriteSink
@@ -389,6 +439,8 @@ type serviceState struct {
 	lineDraw               LineDrawSink
 	pointDraw              PointDrawSink
 	ellipseDraw            EllipseDrawSink
+	ellipseOutline         EllipseOutlineSink
+	hostRequest            HostRequestSink
 	rectangleFill          RectangleFillSink
 	spriteDraw             SpriteDrawSink
 	spriteTransform        SpriteTransformSink
@@ -399,6 +451,9 @@ type serviceState struct {
 	media                  [][]byte
 	mediaSuffix            []byte
 	mediaHasSuffix         []bool
+	mediaBacking           []MediaBacking
+	mediaFileOffset        []int
+	mediaFile              []byte
 	mediaLoad              MediaLoadSink
 	dataRead               DataReadSink
 	dataWrite              DataWriteSink
@@ -471,6 +526,8 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 		state.lineDraw = config.LineDraw
 		state.pointDraw = config.PointDraw
 		state.ellipseDraw = config.EllipseDraw
+		state.ellipseOutline = config.EllipseOutline
+		state.hostRequest = config.HostRequest
 		state.rectangleFill = config.RectangleFill
 		state.spriteDraw = config.SpriteDraw
 		state.spriteTransform = config.SpriteTransform
@@ -487,13 +544,29 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 		state.media = make([][]byte, len(config.Media))
 		state.mediaSuffix = make([]byte, len(config.Media))
 		state.mediaHasSuffix = make([]bool, len(config.Media))
+		state.mediaBacking = make([]MediaBacking, len(config.Media))
+		state.mediaFileOffset = make([]int, len(config.Media))
+		if len(config.MediaFile) != 0 {
+			state.mediaFile = append([]byte(nil), config.MediaFile...)
+		}
 		for i, media := range config.Media {
 			if len(media.Data) > math.MaxUint16 {
 				return nil, fmt.Errorf("%w: media %d exceeds 16-bit length", ErrInvalidServiceConfig, i)
 			}
+			switch media.Backing {
+			case MediaBackingDetached, MediaBackingArena:
+			case MediaBackingFile:
+				if media.FileOffset < 0 || media.FileOffset > len(config.MediaFile)-len(media.Data) {
+					return nil, fmt.Errorf("%w: media %d lies outside the SGS image", ErrInvalidServiceConfig, i)
+				}
+			default:
+				return nil, fmt.Errorf("%w: media %d has unknown backing %d", ErrInvalidServiceConfig, i, media.Backing)
+			}
 			state.media[i] = append([]byte(nil), media.Data...)
 			state.mediaSuffix[i] = media.VirtualSuffix
 			state.mediaHasSuffix[i] = media.HasVirtualSuffix
+			state.mediaBacking[i] = media.Backing
+			state.mediaFileOffset[i] = media.FileOffset
 		}
 	}
 	v, err := NewWithAddressSpace(program, entry, space)
@@ -537,6 +610,35 @@ func (v *VM) serviceTail(ref uint16) ([]byte, error) {
 		return nil, ErrInvalidAddress
 	}
 	return region[start:], nil
+}
+
+// mediaByteAfter returns the byte opcode81 reads at element >= len(record):
+// the native neighbour selected by the record's backing.
+func (s *serviceState) mediaByteAfter(index, element int) (byte, bool) {
+	over := element - len(s.media[index])
+	if over < 0 {
+		return 0, false
+	}
+	switch s.mediaBacking[index] {
+	case MediaBackingFile:
+		position := s.mediaFileOffset[index] + element
+		if position >= len(s.mediaFile) {
+			return 0, false
+		}
+		return s.mediaFile[position], true
+	case MediaBackingArena:
+		for next := index + 1; next < len(s.media); next++ {
+			if s.mediaBacking[next] != MediaBackingArena {
+				continue
+			}
+			if over < len(s.media[next]) {
+				return s.media[next][over], true
+			}
+			over -= len(s.media[next])
+		}
+		return 0, over < mediaArenaSize
+	}
+	return 0, false
 }
 
 func (s *serviceState) deviceQueryWords() ([4]uint16, error) {

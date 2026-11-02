@@ -47,7 +47,7 @@ func TestGVMIssue357HackSignMenuStoryAndSelection(t *testing.T) {
 	hash := func() string {
 		t.Helper()
 		frame := machine.Framebuffer()
-		if frame == nil || frame.Bounds().Size() != image.Pt(120, 80) {
+		if frame == nil || frame.Bounds().Size() != image.Pt(int(operationalGVMWidth), int(operationalGVMHeight)) {
 			t.Fatalf("frame bounds = %v", frame)
 		}
 		return fmt.Sprintf("%x", brewFrameHash(frame))
@@ -55,19 +55,19 @@ func TestGVMIssue357HackSignMenuStoryAndSelection(t *testing.T) {
 	step(120)
 	press("select", 10)
 	press("up", 10)
-	const menuHash = "68ce3bfb959151bbc0e1bfce8409743fb81ff5f7b32c1b79f3fc34c3f969f84e"
+	const menuHash = "8ff1fe95c753aad04f4d3623046f537d52aac8c67d0d1fb7f69fe2d1a2041833"
 	if got := hash(); got != menuHash {
 		t.Fatalf("menu frame = %s, want %s", got, menuHash)
 	}
 	for i := 0; i < 58; i++ {
 		press("select", 2)
 	}
-	const selectionHash = "1cd895b773089753ebf7446f555fa83dacbaf6f774e3788c46c2a0af98efc751"
+	const selectionHash = "d25f28af318f76b55f7362c3b45068d7f92889f50afd2f8b7082f307fa82696c"
 	if got := hash(); got != selectionHash {
 		t.Fatalf("post-story selection frame = %s, want %s", got, selectionHash)
 	}
 	press("down", 2)
-	const movedHash = "00944a04b1ede07b5f71e44a1d23f95adcfeb6224714f2050e8e54cb4620a38b"
+	const movedHash = "db02a1766be69e953b79f400da2143f84a8817aab8690d7c42bd65703d5058b9"
 	if got := hash(); got != movedHash {
 		t.Fatalf("moved selection frame = %s, want %s", got, movedHash)
 	}

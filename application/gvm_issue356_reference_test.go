@@ -38,7 +38,7 @@ func TestGVMIssue356JjayoTycoonContinuesPastReportedFault(t *testing.T) {
 	hash := func() string {
 		t.Helper()
 		frame := machine.Framebuffer()
-		if frame == nil || frame.Bounds().Size() != image.Pt(120, 80) {
+		if frame == nil || frame.Bounds().Size() != image.Pt(int(operationalGVMWidth), int(operationalGVMHeight)) {
 			t.Fatalf("frame bounds = %v", frame)
 		}
 		return fmt.Sprintf("%x", brewFrameHash(frame))
@@ -52,13 +52,13 @@ func TestGVMIssue356JjayoTycoonContinuesPastReportedFault(t *testing.T) {
 		}
 		step(10)
 		if i == 1 {
-			const reportedFrame = "a16e4c1bd07244acf0b2ab40b750c5078b99fbdb6c471fe51b629cd031dd87b7"
+			const reportedFrame = "715769e157ca163315ccdc15d1a68c65cc2d693276625f26eed66cd23714bc83"
 			if got := hash(); got != reportedFrame {
 				t.Fatalf("pre-fault frame = %s, want %s", got, reportedFrame)
 			}
 		}
 	}
-	const cowSelectionFrame = "498fb1f07b72164a341cbaa877ea7aa51fe17dbd1c7b4069305470326908c9ff"
+	const cowSelectionFrame = "45fa9e6413eae0e968f8cdaee033a95d4801f3be64e01d12c5bbd0bd7493a9aa"
 	if got := hash(); got != cowSelectionFrame {
 		t.Fatalf("cow selection frame = %s, want %s", got, cowSelectionFrame)
 	}

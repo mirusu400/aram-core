@@ -15,9 +15,10 @@ var ErrInvalidGVMScalarDimensions = errors.New("application: invalid GVM scalar 
 // without a complete two-byte backing span.
 var ErrInvalidGVMScalarSymbols = errors.New("application: invalid GVM scalar symbols")
 
-// PrepareGVMScalarPrefix returns INCOMPLETE scalar-prefix preparation, NOT an
-// initialized runtime, VM or Machine. Callers MUST NOT treat its result as a
-// complete initializer or as evidence that a game is ready to execute.
+// PrepareGVMScalarPrefix returns the decoded image with the reserved scalar
+// symbols the native loader seeds, NOT an initialized runtime, VM or Machine.
+// The operational GVM machine applies it to every image with at least 16
+// symbols; it is not by itself evidence that a game is ready to execute.
 //
 // Validation precedence is dimensions first (strict host policy, 1..256), then
 // DecodeExecutionImage with its errors propagated unchanged, then at least 16
@@ -32,9 +33,9 @@ var ErrInvalidGVMScalarSymbols = errors.New("application: invalid GVM scalar sym
 // This deliberately omits the final mode store, symbol 7/8 writes, lookup/table
 // initialization, timers, reserved host-state resets, VM/Factory construction,
 // Ready/frame delivery, execution and save-state. In particular it supplies no
-// replacement for the unresolved symbol-8 contents and does not enable ordinary
-// factory execution. Positive dimension and span guards are host safety policy,
-// not a claim about native validation.
+// replacement for the unresolved symbol-8 contents (the reference emulator
+// copies its own product string there). Positive dimension and span guards are
+// host safety policy, not a claim about native validation.
 func PrepareGVMScalarPrefix(data []byte, width, height int32) (gnex.ExecutionImage, error) {
 	if width < 1 || width > 256 || height < 1 || height > 256 {
 		return gnex.ExecutionImage{}, ErrInvalidGVMScalarDimensions

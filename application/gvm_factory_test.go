@@ -154,8 +154,8 @@ func TestGVMOperationalLifecyclePresentationAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	frame := machine.Framebuffer()
-	if frame == nil || frame.Bounds() != image.Rect(0, 0, 120, 80) {
-		t.Fatalf("frame bounds = %v", frame)
+	if frame == nil || frame.Bounds() != image.Rect(0, 0, int(operationalGVMWidth), int(operationalGVMHeight)) {
+		t.Fatalf("frame bounds = %v", frame.Bounds())
 	}
 	if got := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA); got != (color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}) {
 		t.Fatalf("frame pixel = %#v", got)

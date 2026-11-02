@@ -100,6 +100,28 @@ Every fetched opcode advances PC before its handler.
 | `b9` | Explicit service constructor only: write local hour/minute/second/millisecond from one virtual-clock sample and pop once |
 | `ff` | Exit current dispatch, PC=P |
 
+The expanded SKT corpus reaches the following handlers, taken from the same
+GVM2X dispatch table. In operands, E is (symbol, element), F is (symbol) at
+element 0, I is (symbol, index symbol, index element) using the signed word
+stored there, and X is (symbol, first-word index symbol).
+
+| Opcode | Normalized successful behavior |
+| --- | --- |
+| `23` `24` `25` `26` `28` `2a` `2d` | Copy one word, destination first: I←I, I←X, I←E, I←F, X←I, X←E, E←I |
+| `37`, `38` | Add a signed byte immediate to an I (`37`) or X (`38`) element |
+| `48` | Store the top word into an I element without popping it |
+| `64` | Explicit service constructor only: ellipse outline, pop four (`65` fills) |
+| `6d` | Text draw like `6c`, with the secondary selector and background enabled |
+| `84` | Explicit service constructor only: decimal string of the top word into the media record below it, through the native resize, pop two |
+| `87`, `88` | Explicit service constructor and address model only: copy count bytes from (`87`, resizing the record) or to (`88`) a tagged address plus signed byte offset, pop four |
+| `89` | Explicit service constructor only: one-string sprintf (`-`, `0`, width, precision; other conversions literal; at most 255 bytes), pop three |
+| `8d`, `8e` | Four- and five-word forms of `8a`..`8c` |
+| `a5`, `a6` | Replace degrees with round-half-up 100*sin / 100*cos |
+| `ae`, `b0` | Replace three signed words with their maximum / minimum |
+| `b1`, `b2` | Address model only: replace address and count with the index of the first largest / smallest signed word |
+| `b7` | Replace centre, value, radius with centre-radius < value < centre+radius |
+| `c4`, `c5` | Explicit service constructor only: browser request for a NUL-terminated media URL (pop one) or exit; both end the dispatch |
+
 `40` compares against the sign-extended immediate before selecting its unsigned
 BE16 whole-buffer target. Equal values fall through, unequal values branch.
 The host shares the existing immediate-branch policy: require all three operand
