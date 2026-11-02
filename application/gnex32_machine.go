@@ -100,6 +100,8 @@ type gnex32Machine struct {
 	budget  uint64
 	closed  bool
 
+	requestIDs externalRequestSequences
+
 	audioGeneration        uint64
 	audioGenerationPending bool
 	audioEpochGuestNS      int64
@@ -296,6 +298,7 @@ func (m *gnex32Machine) Reset(ctx context.Context) error {
 			return err
 		}
 	}
+	m.requestIDs.nextSession()
 	m.runtime = runtime
 	m.mediaOutputRevision = runtime.AudioOutputRevision()
 	m.presentation = framePresentationCache{}
@@ -684,6 +687,7 @@ func (m *gnex32Machine) Close() error {
 	}
 	m.closed = true
 	m.state = machinecore.StateStopped
+	m.requestIDs.nextSession()
 	return result
 }
 

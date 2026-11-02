@@ -117,6 +117,7 @@ func (m *gnex32Machine) LoadState(input io.Reader) error {
 		_ = candidate.Close()
 		return fmt.Errorf("load GNEX32 state: %w", ErrGNEX32NetworkStateActive)
 	}
+	m.requestIDs.nextSession()
 	// The old runtime has no external resources; replacing its isolated service
 	// graph lets it be reclaimed without mutating live state before validation.
 	m.runtime = candidate

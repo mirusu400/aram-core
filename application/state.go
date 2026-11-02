@@ -228,6 +228,7 @@ func (m *Machine) LoadState(input io.Reader) error {
 	// was written; re-apply the current preference so a toggle since then wins.
 	m.applyAudioMixMode()
 	m.setAudioGenerationEpoch(m.guestTimeLocked())
+	m.requestIDs.nextSession()
 	return nil
 }
 

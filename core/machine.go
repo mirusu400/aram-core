@@ -225,6 +225,8 @@ const (
 // ExternalRequest is a guest-requested action that must be acknowledged by the
 // host after it has been handled or deliberately ignored.
 type ExternalRequest struct {
+	// Sequence is an opaque, non-zero acknowledgement token. Hosts must return
+	// a token obtained from ExternalRequests rather than synthesizing one.
 	Sequence uint64
 	GuestNS  int64
 	Kind     ExternalRequestKind
@@ -233,6 +235,8 @@ type ExternalRequest struct {
 }
 
 // ExternalRequestMachine exposes an ordered, persistent host-action outbox.
+// ExternalRequests returns a detached snapshot; ClearExternalRequests
+// acknowledges every request through an observed Sequence token.
 type ExternalRequestMachine interface {
 	ExternalRequests() []ExternalRequest
 	ClearExternalRequests(through uint64)

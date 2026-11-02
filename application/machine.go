@@ -355,6 +355,8 @@ type Machine struct {
 	audioCursorSample   uint64
 	audioCursorValid    bool
 	mediaOutputRevision uint64
+
+	requestIDs externalRequestSequences
 }
 
 func (m *Machine) State() machinecore.State {
@@ -546,6 +548,7 @@ func (m *Machine) Reset(ctx context.Context) error {
 			draw.Src,
 		)
 		m.state = machinecore.StateReady
+		m.requestIDs.nextSession()
 		return nil
 	}
 	if len(m.initialContext) == 0 {
@@ -603,6 +606,7 @@ func (m *Machine) Reset(ctx context.Context) error {
 		m.input = nil
 		draw.Draw(m.frame, m.frame.Bounds(), image.NewUniform(color.Black), image.Point{}, draw.Src)
 		m.state = machinecore.StateReady
+		m.requestIDs.nextSession()
 		return nil
 	}
 	if err := m.cpu.WriteMemory(m.info.TextAddress, m.initialText); err != nil {
@@ -645,6 +649,7 @@ func (m *Machine) Reset(ctx context.Context) error {
 	m.input = nil
 	draw.Draw(m.frame, m.frame.Bounds(), image.NewUniform(color.Black), image.Point{}, draw.Src)
 	m.state = machinecore.StateReady
+	m.requestIDs.nextSession()
 	return nil
 }
 
@@ -807,6 +812,7 @@ func (m *Machine) Close() error {
 		}
 	}
 	m.state = machinecore.StateStopped
+	m.requestIDs.nextSession()
 	m.mu.Unlock()
 	return err
 }

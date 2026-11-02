@@ -163,6 +163,40 @@ func (m *Machine) DisconnectNetwork(connection uint64) error {
 	)
 }
 
+// ExternalRequests preserves the wrapped machine's host-action outbox. Both the
+// read and the defensive copy are serialized with guest execution: optional
+// machine implementations are not required to expose their own execution lock,
+// and a shallow snapshot must not let a host mutate retained request data.
+func (m *Machine) ExternalRequests() []machinecore.ExternalRequest {
+	requests, ok := m.machine.(machinecore.ExternalRequestMachine)
+	if !ok {
+		return nil
+	}
+	var snapshot []machinecore.ExternalRequest
+	_ = m.engine.runMachine(func() error {
+		snapshot = append([]machinecore.ExternalRequest(nil), requests.ExternalRequests()...)
+		for index := range snapshot {
+			snapshot[index].Data = append([]byte(nil), snapshot[index].Data...)
+		}
+		return nil
+	}, applyNone)
+	return snapshot
+}
+
+// ClearExternalRequests acknowledges host actions while serialized with cheat
+// operations and guest execution. Otherwise a frontend acknowledgement could
+// race a frame that appends another request to the same outbox.
+func (m *Machine) ClearExternalRequests(through uint64) {
+	requests, ok := m.machine.(machinecore.ExternalRequestMachine)
+	if !ok {
+		return
+	}
+	_ = m.engine.runMachine(func() error {
+		requests.ClearExternalRequests(through)
+		return nil
+	}, applyNone)
+}
+
 func (m *Machine) SupportsPointer() bool {
 	pointer, ok := m.machine.(machinecore.PointerInputMachine)
 	return ok && pointer.SupportsPointer()
@@ -206,3 +240,4 @@ var _ machinecore.Machine = (*Machine)(nil)
 var _ machinecore.PointerInputMachine = (*Machine)(nil)
 var _ machinecore.HostEventReceiver = (*Machine)(nil)
 var _ machinecore.NetworkTransportMachine = (*Machine)(nil)
+var _ machinecore.ExternalRequestMachine = (*Machine)(nil)
