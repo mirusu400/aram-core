@@ -11,11 +11,13 @@ import (
 	"image/color"
 	"strings"
 	"testing"
+	"time"
 
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/loader"
 	"github.com/mirusu400/aram-core/loader/gnex"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func gvmExecutionArchive(t *testing.T, code []byte) []byte {
@@ -173,6 +175,286 @@ func TestGVMOperationalLifecyclePresentationAndReset(t *testing.T) {
 	// Previously published snapshots remain valid and unchanged after reset.
 	if got := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA); got.R != 0xff || got.A != 0xff {
 		t.Fatalf("published snapshot changed after reset: %#v", got)
+	}
+}
+
+func TestGVMOperationalPauseResumeControlsFrameDispatch(t *testing.T) {
+	machine := newOperationalFixture(t, gvmOperationalArchive(t))
+	defer machine.Close()
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	if machine.State() != machinecore.StatePaused {
+		t.Fatalf("paused state = %s", machine.State())
+	}
+	if err := machine.StepFrame(context.Background()); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("step while paused: %v", err)
+	}
+	if machine.GVMPresentCount() != 0 {
+		t.Fatalf("paused step dispatched guest work: presents=%d", machine.GVMPresentCount())
+	}
+	if err := machine.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if machine.State() != machinecore.StateRunning || !machine.vm.Halted() {
+		t.Fatalf("resumed state=%s halted=%v", machine.State(), machine.vm.Halted())
+	}
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if machine.GVMPresentCount() != 1 {
+		t.Fatalf("resumed frame presents=%d", machine.GVMPresentCount())
+	}
+}
+
+func TestGVMDecodedMediaProducesTimestampedPCMAndResetMarker(t *testing.T) {
+	clock, err := shared.NewClock(shared.DefaultWallEpochMillis, 9*60, "ko-KR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	media, err := newGVMDecodedMediaServices(clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := append([]byte{2, 0}, presentationTestWave()...)
+	if err := media.LoadGVMMedia(7, encoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := media.advance(time.Second / 60); err != nil {
+		t.Fatal(err)
+	}
+	machine := &gvmMachine{
+		operational:         true,
+		clock:               clock,
+		mediaServices:       media,
+		audioGeneration:     1,
+		mediaOutputRevision: 0,
+	}
+	chunk := machine.DrainAudio()
+	if err := chunk.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if chunk.SampleRate != 44_100 || chunk.Channels != 1 || len(chunk.PCM16) == 0 {
+		t.Fatalf("decoded GVM audio = %+v", chunk)
+	}
+	if chunk.StartGuestNS != 0 || chunk.StartSample != 0 || chunk.Generation != 2 {
+		t.Fatalf("first GVM audio timeline = %+v", chunk)
+	}
+	if err := media.ResetGVMAudio(5); err != nil {
+		t.Fatal(err)
+	}
+	marker := machine.DrainAudio()
+	if err := marker.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if len(marker.PCM16) != 0 || marker.Generation != 3 ||
+		marker.StartGuestNS != int64(time.Second/60) {
+		t.Fatalf("GVM reset marker = %+v", marker)
+	}
+}
+
+func TestGVMDecodedMediaRejectsUnknownPayloadAtomically(t *testing.T) {
+	clock, err := shared.NewClock(shared.DefaultWallEpochMillis, 9*60, "ko-KR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	media, err := newGVMDecodedMediaServices(clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := append([]byte{2, 0}, presentationTestWave()...)
+	if err := media.LoadGVMMedia(1, encoded); err != nil {
+		t.Fatal(err)
+	}
+	revision := media.revision
+	if err := media.LoadGVMMedia(2, []byte{2, 0, 'B', 'A', 'D', '!'}); !errors.Is(err, shared.ErrMediaUnsupported) {
+		t.Fatalf("unsupported GVM media: %v", err)
+	}
+	if media.revision != revision {
+		t.Fatalf("failed replacement changed revision: got %d want %d", media.revision, revision)
+	}
+	if err := media.advance(time.Second / 60); err != nil {
+		t.Fatal(err)
+	}
+	audio, _, _ := media.drainTimed()
+	if len(audio.PCM16) == 0 {
+		t.Fatal("failed replacement discarded the active clip")
+	}
+}
+
+func TestGVMAudioStopAndCloseDiscardBufferedOutput(t *testing.T) {
+	for _, action := range []struct {
+		name string
+		run  func(*gvmMachine) error
+	}{
+		{name: "stop", run: func(machine *gvmMachine) error { return machine.Stop() }},
+		{name: "close", run: func(machine *gvmMachine) error { return machine.Close() }},
+	} {
+		t.Run(action.name, func(t *testing.T) {
+			clock, err := shared.NewClock(shared.DefaultWallEpochMillis, 9*60, "ko-KR")
+			if err != nil {
+				t.Fatal(err)
+			}
+			media, err := newGVMDecodedMediaServices(clock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := media.LoadGVMMedia(1, append([]byte{2, 0}, presentationTestWave()...)); err != nil {
+				t.Fatal(err)
+			}
+			if err := media.advance(time.Second / 60); err != nil {
+				t.Fatal(err)
+			}
+			machine := &gvmMachine{
+				state: machinecore.StateRunning, operational: true,
+				clock: clock, mediaServices: media, audioGeneration: 1,
+			}
+			if err := action.run(machine); err != nil {
+				t.Fatal(err)
+			}
+			marker := machine.DrainAudio()
+			if err := marker.Validate(); err != nil || marker.Generation != 2 ||
+				len(marker.PCM16) != 0 || marker.StartGuestNS != int64(time.Second/60) {
+				t.Fatalf("%s audio marker=%+v err=%v", action.name, marker, err)
+			}
+		})
+	}
+}
+
+func TestGVMOperationalVolatileStateRoundTrip(t *testing.T) {
+	archive := gvmOperationalArchive(t)
+	machine := newOperationalFixture(t, archive)
+	digest := sha256.Sum256(archive)
+	machine.source.SHA256 = fmt.Sprintf("%x", digest)
+	defer machine.Close()
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	var encoded bytes.Buffer
+	if err := machine.SaveState(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	saved := bytes.Clone(encoded.Bytes())
+
+	if err := machine.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.QueueInput(machinecore.InputEvent{Control: "num5", Pressed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	if got := color.RGBAModel.Convert(machine.Framebuffer().At(0, 0)).(color.RGBA); got.R == 0xff {
+		t.Fatalf("mutation did not replace saved white frame: %#v", got)
+	}
+	if err := machine.LoadState(bytes.NewReader(saved)); err != nil {
+		t.Fatal(err)
+	}
+	if machine.State() != machinecore.StatePaused || machine.GVMPresentCount() != 1 {
+		t.Fatalf("restored lifecycle=%s presents=%d", machine.State(), machine.GVMPresentCount())
+	}
+	frame := machine.Framebuffer()
+	if got := color.RGBAModel.Convert(frame.At(0, 0)).(color.RGBA); got != (color.RGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}) {
+		t.Fatalf("restored frame pixel = %#v", got)
+	}
+	if _, mutable := frame.(interface{ Set(int, int, color.Color) }); mutable {
+		t.Fatal("restored framebuffer exposed mutable image")
+	}
+	marker := machine.DrainAudio()
+	if err := marker.Validate(); err != nil || marker.Generation != 2 || len(marker.PCM16) != 0 {
+		t.Fatalf("load-state audio marker=%+v err=%v", marker, err)
+	}
+	if err := machine.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if machine.GVMPresentCount() != 2 {
+		t.Fatalf("restored execution did not resume: presents=%d", machine.GVMPresentCount())
+	}
+}
+
+func TestGVMOperationalStateRestoresActiveDecodedAudio(t *testing.T) {
+	archive := gvmOperationalArchive(t)
+	machine := newOperationalFixture(t, archive)
+	digest := sha256.Sum256(archive)
+	machine.source.SHA256 = fmt.Sprintf("%x", digest)
+	defer machine.Close()
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	encoded := append([]byte{2, 0}, presentationTestWave()...)
+	if err := machine.mediaServices.LoadGVMMedia(3, encoded); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	var encodedState bytes.Buffer
+	if err := machine.SaveState(&encodedState); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.mediaServices.ResetGVMAudio(5); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.LoadState(bytes.NewReader(encodedState.Bytes())); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	chunk := machine.DrainAudio()
+	if err := chunk.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if chunk.Generation != 2 || chunk.SampleRate != 44_100 || chunk.Channels != 1 ||
+		len(chunk.PCM16) == 0 || chunk.StartGuestNS != 0 || chunk.StartSample != 0 {
+		t.Fatalf("restored GVM active audio = %+v", chunk)
+	}
+}
+
+func TestGVMOperationalStateRejectsCorruptionWithoutMutation(t *testing.T) {
+	archive := gvmOperationalArchive(t)
+	machine := newOperationalFixture(t, archive)
+	digest := sha256.Sum256(archive)
+	machine.source.SHA256 = fmt.Sprintf("%x", digest)
+	defer machine.Close()
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.StepFrame(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := machine.Pause(); err != nil {
+		t.Fatal(err)
+	}
+	var encoded bytes.Buffer
+	if err := machine.SaveState(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := bytes.Clone(encoded.Bytes())
+	corrupt[len(corrupt)-1] ^= 0x80
+	before := color.RGBAModel.Convert(machine.Framebuffer().At(0, 0)).(color.RGBA)
+	if err := machine.LoadState(bytes.NewReader(corrupt)); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("corrupt load error = %v", err)
+	}
+	after := color.RGBAModel.Convert(machine.Framebuffer().At(0, 0)).(color.RGBA)
+	if machine.State() != machinecore.StatePaused || machine.GVMPresentCount() != 1 || after != before {
+		t.Fatal("failed state load mutated the live GVM machine")
 	}
 }
 

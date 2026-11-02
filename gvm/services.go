@@ -12,6 +12,7 @@ import (
 var (
 	ErrInvalidServiceConfig       = errors.New("gvm: invalid service configuration")
 	ErrDeviceQueryUnavailable     = errors.New("gvm: device query service unavailable")
+	ErrDeviceIdentityUnavailable  = errors.New("gvm: device identity service unavailable")
 	ErrClockUnavailable           = errors.New("gvm: clock service unavailable")
 	ErrClockRange                 = errors.New("gvm: clock outside supported civil-time range")
 	ErrRandomUnavailable          = errors.New("gvm: random service unavailable")
@@ -47,6 +48,16 @@ type DeviceQueryProfile struct {
 	Width     int32
 	Height    int32
 	AudioType int32
+}
+
+// DeviceIdentityProfile supplies the two strings exposed by the legacy GVM
+// system-identity operations. MIN is the mobile identification number copied
+// by opcode52. UserID is retained beside it for the adjacent authenticated
+// operation without assigning it semantics to opcode52. Values are copied at
+// construction and may not contain an embedded NUL.
+type DeviceIdentityProfile struct {
+	MIN    string
+	UserID string
 }
 
 // CivilTimePolicy identifies an explicitly selected portable conversion policy.
@@ -295,9 +306,10 @@ type DataWriteSink interface {
 // not establish an actual device's time or profile. Callers must select both.
 // No VM save-state or factory/startup integration is supplied by this API.
 type ServiceConfig struct {
-	DeviceQuery *DeviceQueryProfile
-	Clock       *gruntime.Clock
-	ClockPolicy CivilTimePolicy
+	DeviceQuery    *DeviceQueryProfile
+	DeviceIdentity *DeviceIdentityProfile
+	Clock          *gruntime.Clock
+	ClockPolicy    CivilTimePolicy
 	// Random is borrowed, and RandomStream is copied. Supply both or neither.
 	// The owner must serialize execution with Random draws, seeding and Restore.
 	// Construction validates only the name, never looking up or creating a stream.
@@ -360,6 +372,7 @@ type ServiceConfig struct {
 
 type serviceState struct {
 	deviceQuery            *DeviceQueryProfile
+	deviceIdentity         *DeviceIdentityProfile
 	clock                  *gruntime.Clock
 	clockPolicy            CivilTimePolicy
 	random                 *gruntime.Random
@@ -422,6 +435,15 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 			}
 			copy := *p
 			state.deviceQuery = &copy
+		}
+		if identity := config.DeviceIdentity; identity != nil {
+			if strings.IndexByte(identity.MIN, 0) >= 0 || strings.IndexByte(identity.UserID, 0) >= 0 ||
+				len(identity.MIN) >= math.MaxUint16 || len(identity.UserID) >= math.MaxUint16 {
+				return nil, fmt.Errorf("%w: device identity strings must be NUL-free and shorter than 65535 bytes", ErrInvalidServiceConfig)
+			}
+			copy := *identity
+			copy.MIN, copy.UserID = strings.Clone(identity.MIN), strings.Clone(identity.UserID)
+			state.deviceIdentity = &copy
 		}
 		if (config.Clock == nil && config.ClockPolicy != 0) || (config.Clock != nil && config.ClockPolicy != FixedOffsetNoDST) {
 			return nil, fmt.Errorf("%w: clock requires explicit FixedOffsetNoDST policy", ErrInvalidServiceConfig)

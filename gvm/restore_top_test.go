@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// These tests specify a CANDIDATE restricted host domain, not native guards.
-// Only observed, representable, non-growing restores are proposed for support.
+// These tests cover the exact scalar top-index restore, including growth that
+// re-exposes native backing words after host-cleared public pops.
 func restorePush(code []byte, value uint16) []byte {
 	return append(code, 6, byte(value>>8), byte(value))
 }
@@ -62,11 +62,16 @@ func TestRestoreTopPublicDepthMarkerMatrix(t *testing.T) {
 			if err := v.Run(uint64(steps)); err != ErrBudget {
 				t.Fatalf("prime %d/%d: %v", savedDepth, current, err)
 			}
-			if savedDepth > current {
-				restoreUnsupported(t, v)
-				continue
+			var want []uint16
+			if savedDepth > 0 {
+				want = make([]uint16, savedDepth)
+				for index := range want {
+					want[index] = uint16(0x1100 + index)
+				}
 			}
-			want := append([]uint16(nil), v.Stack()[:savedDepth]...)
+			if current > savedDepth {
+				copy(want, v.Stack()[:savedDepth])
+			}
 			if err := v.Step(); err != nil {
 				failures++
 				if first == "" {
@@ -86,7 +91,7 @@ func TestRestoreTopPublicDepthMarkerMatrix(t *testing.T) {
 		}
 	}
 	if failures > 0 {
-		t.Fatalf("%d supported-domain failures among 2211 non-growing pairs (2145 growing controls checked); first: %s", failures, first)
+		t.Fatalf("%d restore failures across the complete depth matrix; first: %s", failures, first)
 	}
 }
 
@@ -109,7 +114,7 @@ func TestRestoreTopScalarNotSnapshotAndOverwrite(t *testing.T) {
 	}
 }
 
-func TestRestoreTopGrowingAfterClearedPopRejected(t *testing.T) {
+func TestRestoreTopGrowingReexposesNativeBackingAfterHostPop(t *testing.T) {
 	for _, pop := range [][]byte{{0x96}, {0x3f, 7, 0, 0xff}} {
 		code := []byte{5, 7, 0x0b}
 		code = append(code, pop...)
@@ -122,7 +127,9 @@ func TestRestoreTopGrowingAfterClearedPopRejected(t *testing.T) {
 		if err := v.Run(3); err != ErrBudget || len(v.Stack()) != 0 || v.stack[0] != 0 {
 			t.Fatalf("pop prime: %v", err)
 		}
-		restoreUnsupported(t, v)
+		if err := v.Step(); err != nil || !reflect.DeepEqual(v.Stack(), []uint16{7}) {
+			t.Fatalf("growing restore = %v stack=%x", err, v.Stack())
+		}
 	}
 }
 
@@ -134,6 +141,7 @@ func TestRestoreTopExactBackingAndMarkerPreservation(t *testing.T) {
 			for i := range v.stack {
 				v.stack[i] = uint16(0x9000 + i)
 			}
+			v.stackBacking = v.stack
 			v.returnDepth, v.returns[0], v.returns[1] = 2, 19, 23
 			before := *v
 			before.pc, before.depth = 1, savedDepth
@@ -151,7 +159,15 @@ func TestRestoreTopInvalidMarkerDomain(t *testing.T) {
 	for _, valid := range []bool{false, true} {
 		for _, marker := range []int32{-2147483648, -2, -1, 0, 63, 64, 65, 2147483647} {
 			for _, depth := range []int{0, 1, 64, 65} {
-				if valid && marker >= -1 && marker <= 64 && int64(marker)+1 <= int64(depth) {
+				if valid && marker >= -1 && marker <= 64 {
+					v := New([]byte{0x0c})
+					v.depth, v.savedTop, v.savedTopValid = depth, marker, true
+					for i := range v.stackBacking {
+						v.stackBacking[i] = uint16(i + 1)
+					}
+					if err := v.Step(); err != nil || len(v.Stack()) != int(marker)+1 {
+						t.Fatalf("valid marker %d depth %d: %v stack=%x", marker, depth, err, v.Stack())
+					}
 					continue
 				}
 				v := New([]byte{0x0c})
@@ -159,6 +175,7 @@ func TestRestoreTopInvalidMarkerDomain(t *testing.T) {
 				for i := range v.stack {
 					v.stack[i] = uint16(i + 1)
 				}
+				v.stackBacking = v.stack
 				restoreUnsupported(t, v)
 			}
 		}

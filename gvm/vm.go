@@ -49,17 +49,18 @@ func (e *ExecutionError) Unwrap() error { return e.Cause }
 // VM is not safe for concurrent use. The zero value is equivalent to New(nil).
 // Stack lengths encode the reference's signed top indices (length minus one).
 type VM struct {
-	code        []byte
-	symbols     [][]byte
-	address     *addressMemory
-	services    *serviceState
-	pc          int
-	stack       [65]uint16
-	depth       int
-	returns     [17]int
-	returnDepth int
-	halted      bool
-	fault       error
+	code         []byte
+	symbols      [][]byte
+	address      *addressMemory
+	services     *serviceState
+	pc           int
+	stack        [65]uint16
+	stackBacking [65]uint16
+	depth        int
+	returns      [17]int
+	returnDepth  int
+	halted       bool
+	fault        error
 	// savedTop is meaningful only after 0b. Validity is host bookkeeping:
 	// native initial/reset state and future consumers are not established.
 	savedTop      int32
@@ -209,19 +210,18 @@ func (v *VM) Step() error {
 		v.savedTop = int32(v.depth) - 1
 		v.savedTopValid = true
 	case 0x0c:
-		// Only observed, representable, non-growing restores are supported.
-		// Growing could expose slots cleared by prior host pops. These domain
-		// restrictions are host policy, not guards in the native scalar copy.
+		// The exact handler assigns the saved scalar to the top index. Preserve
+		// host-cleared public slots separately so a growing restore can reproduce
+		// the native backing words without weakening pop hygiene.
 		if !v.savedTopValid || v.savedTop < -1 || v.savedTop > 64 {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
 			return v.fault
 		}
 		depth := int(v.savedTop) + 1
 		if depth > v.depth {
-			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
-			return v.fault
+			copy(v.stack[v.depth:depth], v.stackBacking[v.depth:depth])
 		}
-		v.depth = depth // Index only: preserve backing words and the marker.
+		v.depth = depth
 	case 0xff:
 		v.halted = true
 	case 0x0d:
@@ -528,6 +528,28 @@ func (v *VM) Step() error {
 		// Approved host popped-slot ZERO hygiene on both paths, deliberately
 		// unlike native retention. Equality bypasses the provider entirely.
 		v.stack[v.depth] = 0
+	case 0xa2:
+		// Draw one CRT-compatible rand value, reduce it modulo 100, and replace
+		// the signed threshold on top with the canonical result remainder<threshold.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.random == nil {
+			return fail(ErrRandomUnavailable)
+		}
+		random, err := v.services.random.LCG214013Output15(v.services.randomStream)
+		if err != nil {
+			return fail(err)
+		}
+		value := uint16(0)
+		if int16(random%100) < int16(v.stack[v.depth-1]) {
+			value = 1
+		}
+		v.stack[v.depth-1] = value
 	case 0x55:
 		// The exact-build native handler clears the configured drawing buffer
 		// to byte 0xff. It has no operands or guest-stack effects and does not
@@ -1054,6 +1076,22 @@ func (v *VM) Step() error {
 		if err := v.services.displayPresent.PresentGVMDisplay(); err != nil {
 			return fail(err)
 		}
+	case 0x79:
+		// Replace the signed media index on top with the selected record's raw
+		// uint16 byte length. The exact handler reads the descriptor length and
+		// leaves the stack depth unchanged.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int(int16(v.stack[v.depth-1]))
+		if index < 0 || index >= len(v.services.media) {
+			return fail(ErrInvalidMediaIndex)
+		}
+		v.stack[v.depth-1] = uint16(len(v.services.media[index]))
 	case 0x7a:
 		// GVM2X resizes a media record and returns a success word in place
 		// of the index, consuming the requested size. Keep the media records
@@ -1074,6 +1112,23 @@ func (v *VM) Step() error {
 		v.stack[v.depth-2] = result
 		v.depth--
 		v.stack[v.depth] = 0
+	case 0x7b:
+		// Resize the selected media record and zero the requested byte count.
+		// As in the exact handler, resize failure still consumes both operands.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 2 {
+			return fail(ErrStackUnderflow)
+		}
+		index := int(int16(v.stack[v.depth-2]))
+		size := int(int16(v.stack[v.depth-1]))
+		if resizeGVMMedia(v.services.media, index, size) {
+			clear(v.services.media[index][:size])
+		}
+		v.depth -= 2
+		clear(v.stack[v.depth : v.depth+2])
 	case 0x7e:
 		// Copy a counted substring into a dynamic media record and append NUL.
 		// Operands are destination, source, source offset, byte count.
@@ -1217,6 +1272,28 @@ func (v *VM) Step() error {
 		v.stack[v.depth-2] = uint16(payload[element])
 		v.depth--
 		v.stack[v.depth] = 0
+	case 0x86:
+		// Resolve a tagged file/RAM word address, add a signed byte offset, and
+		// store the low byte of the third operand. This is the address-space
+		// counterpart to opcode82's media-record byte store.
+		if v.address == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth < 3 {
+			return fail(ErrStackUnderflow)
+		}
+		element := int(int16(v.stack[v.depth-2]))
+		payload, err := v.serviceTail(v.stack[v.depth-3])
+		if err != nil {
+			return fail(err)
+		}
+		if element < 0 || element >= len(payload) {
+			return fail(ErrInvalidElement)
+		}
+		payload[element] = byte(v.stack[v.depth-1])
+		v.depth -= 3
+		clear(v.stack[v.depth : v.depth+3])
 	case 0x81:
 		if v.services == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
@@ -1443,6 +1520,28 @@ func (v *VM) Step() error {
 		}
 		v.depth--
 		v.stack[v.depth] = 0 // Host hygiene only.
+	case 0x52:
+		// The exact GVM2X handler copies the host MIN, including its NUL
+		// terminator, into the selected media record and consumes the index.
+		// Its resize failure path still consumes the operand; retain that result
+		// while rejecting an absent explicit identity provider.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		if v.services.deviceIdentity == nil {
+			return fail(ErrDeviceIdentityUnavailable)
+		}
+		index := int(int16(v.stack[v.depth-1]))
+		identity := append([]byte(v.services.deviceIdentity.MIN), 0)
+		if resizeGVMMedia(v.services.media, index, len(identity)) {
+			copy(v.services.media[index], identity)
+		}
+		v.depth--
+		v.stack[v.depth] = 0
 	case 0xb5:
 		if v.address == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
@@ -1981,6 +2080,72 @@ func (v *VM) Step() error {
 		value := uint16(int16(int8(v.code[v.pc+2])))
 		binary.LittleEndian.PutUint16(region[2*element:2*element+2], value)
 		v.pc += 3
+	case 0x27:
+		// destination[indexSymbol[indexElement]] = signed immediate. The
+		// native handler has an otherwise-surprising upper-stack guard even
+		// though the operation does not change the operand stack.
+		if len(v.code)-v.pc < 4 {
+			return fail(ErrTruncated)
+		}
+		if v.depth >= len(v.stack) {
+			return fail(ErrStackOverflow)
+		}
+		destination := int(v.code[v.pc])
+		indexSymbol := int(v.code[v.pc+1])
+		indexElement := int(v.code[v.pc+2])
+		immediate := int8(v.code[v.pc+3])
+		if indexSymbol >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		indexRegion := v.symbols[indexSymbol]
+		if len(indexRegion)%2 != 0 || len(indexRegion) > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if indexElement >= len(indexRegion)/2 {
+			return fail(ErrInvalidElement)
+		}
+		if destination >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		destinationRegion := v.symbols[destination]
+		if len(destinationRegion)%2 != 0 || len(destinationRegion) > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		element := int16(binary.LittleEndian.Uint16(indexRegion[2*indexElement : 2*indexElement+2]))
+		if element < 0 || int(element) >= len(destinationRegion)/2 {
+			return fail(ErrInvalidElement)
+		}
+		offset := 2 * int(element)
+		binary.LittleEndian.PutUint16(destinationRegion[offset:offset+2], uint16(int16(immediate)))
+		v.pc += 4
+	case 0x32:
+		// destination[0] = source[indexSymbol[indexElement]]. The four
+		// immediate operands are destination, source, index symbol, and fixed
+		// index element, matching the exact GVM2X handler's load order.
+		if len(v.code)-v.pc < 4 {
+			return fail(ErrTruncated)
+		}
+		destination, source := int(v.code[v.pc]), int(v.code[v.pc+1])
+		indexSymbol, indexElement := int(v.code[v.pc+2]), int(v.code[v.pc+3])
+		if destination >= len(v.symbols) || indexSymbol >= len(v.symbols) || source >= len(v.symbols) {
+			return fail(ErrInvalidSymbol)
+		}
+		destinationRegion, sourceRegion := v.symbols[destination], v.symbols[source]
+		indexRegion := v.symbols[indexSymbol]
+		if len(destinationRegion) < 2 || len(sourceRegion)%2 != 0 || len(sourceRegion) > 510 ||
+			len(indexRegion)%2 != 0 || len(indexRegion) > 510 {
+			return fail(ErrInvalidSymbolRegion)
+		}
+		if indexElement >= len(indexRegion)/2 {
+			return fail(ErrInvalidElement)
+		}
+		element := int16(binary.LittleEndian.Uint16(indexRegion[2*indexElement : 2*indexElement+2]))
+		if element < 0 || int(element) >= len(sourceRegion)/2 {
+			return fail(ErrInvalidElement)
+		}
+		value := binary.LittleEndian.Uint16(sourceRegion[2*int(element) : 2*int(element)+2])
+		binary.LittleEndian.PutUint16(destinationRegion[:2], value)
+		v.pc += 4
 	case 0x33:
 		// destination[0] = source[indexSymbol[0]]. The three operands are
 		// immediate symbol indices in destination, source, index order.
@@ -2424,6 +2589,11 @@ func (v *VM) Step() error {
 	default:
 		v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
 		return v.fault
+	}
+	// Only preserve hidden stack words while an opcode 0x0b restore marker is
+	// active. Ordinary execution must not acquire extra observable VM state.
+	if v.savedTopValid && v.savedTop >= -1 && v.savedTop < int32(len(v.stack)) {
+		copy(v.stackBacking[:v.depth], v.stack[:v.depth])
 	}
 	return nil
 }

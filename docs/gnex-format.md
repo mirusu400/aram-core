@@ -14,7 +14,7 @@ The repository has two execution paths:
 
 | SGS generation | Runtime | Qualified local corpus | Product status |
 | --- | --- | ---: | --- |
-| versions 1 and 2 | [`gvm`](../gvm) | nine exact hashes | operational display, input, timer, and persistent-data paths |
+| versions 1 and 2 | [`gvm`](../gvm) | twenty-one exact outer hashes / seventeen SGS images | operational display, input, timer, decoded audio, volatile state, and persistent-data paths |
 | version 4 | [`gnex32`](../gnex32) | one exact hash, `바이러스무삭제` | operational display, input, timers, services, audio, save state, and restart persistence |
 
 Product routing is deliberately hash-qualified. A structurally valid but
@@ -34,7 +34,7 @@ layout is accepted without structural corpus evidence.
 
 - ZIP distributions with one basename-matched `.sgs` plus `.mod` or `.inf`;
 - a standalone SGS at offset zero; and
-- the observed 32-byte-prefixed version-4 SGS.
+- the observed 32-byte-prefixed version-2 and version-4 SGS shapes.
 
 Recognition is bounded by per-member, aggregate expansion, entry-count, path,
 duplicate-name, and exact-size checks. A file extension alone is not identity.
@@ -206,6 +206,13 @@ These rules, all seven image kinds, copy direction, alpha modes, 1×/2× zoom,
 mirror, rotation, hotspot placement, clipping, and gamma are covered by pixel
 tests and qualified reference frames.
 
+The older GVM path exposes the documented 182 public COLOR8 selectors only.
+Values 182..255 in a type-8 raster fail closed instead of being treated as a
+second undocumented palette. The exact native component ramps and blink cadence
+are not present in the available SDK reference or qualified assets, so portable
+presentation retains the current RGB332 expansion and initial blink phase rather
+than claiming reference-perfect color timing.
+
 `FlushPartial` applies an inclusive clipped rectangle to the last presentation.
 Line/rectangle/rounded-rectangle operations use inclusive LCD coordinates and
 treat reversed bounds as empty. EUC-KR decoding rejects replacement characters.
@@ -214,6 +221,13 @@ and solid-background height are covered by raster tests. Invalid font sizes fail
 atomically.
 
 ### Audio and handset controls
+
+The qualified v1/v2 GVM profile accepts the corpus-observed two-byte `02 00`
+envelope followed by MMMD, MIDI (`MThd`), or WAV (`RIFF`) data. A new load is
+decoded and started before it replaces the current clip, reset accepts the two
+observed backend types 5 and 6, and each running 60 Hz frame advances the shared
+guest-time mixer. `DrainAudio` reports PCM timestamps and generation changes;
+pause freezes that timeline together with guest execution.
 
 All 30 flag-`0x200` resources decode through the MMMD/MIDI/WAV pipeline. Product
 tests reach multiple menu/BGM/SFX resources, observe non-silent PCM, validate
@@ -236,6 +250,14 @@ palette overrides, all LCD buffers, timers, RNG, clock, UserNV, handset state,
 network state, active audio decoders, and queued PCM. Restore validates a new
 runtime completely before replacing the live one.
 
+The qualified GVM operational profile uses the same outer safety properties for
+its own schema: version, checksum, size bound, and exact source SHA-256. It
+captures program/RAM aliases, operand and return stacks (including the private
+`0b`/`0c` backing), media/text state, timers, display buffers and published
+frame, RNG, clock, decoded audio, and the presentation generation. Loading constructs
+and validates a complete candidate before replacing the live machine and emits
+a new audio generation so a frontend discards pre-restore samples.
+
 Restart persistence is distinct from a volatile save state. GNEX32 exports its
 16-word UserNV area; GVM versions 1/2 export their fixed persistent byte record.
 Both implement the optional `core.SaveDataMachine` contract and reject imports
@@ -256,7 +278,7 @@ explicit:
 | palette | `runtime.SKTGammaColor`, `SKTGammaRGBA`, `SKTPackedColor` | GVM packed selectors versus GNEX32 selector/RGB image palettes |
 | input | `core.InputEvent`, common normalized control names | GVM press callback codes versus GNEX32 press/release values and repeats |
 | persistence | optional `core.SaveDataMachine` | GVM byte record versus GNEX32 16-word UserNV envelope |
-| audio | `core.Machine.DrainAudio` / `core.AudioChunk` | GNEX32 currently produces timestamped PCM; the qualified GVM path returns the valid zero chunk because no decoded playback service is exposed by that path |
+| audio | `core.Machine.DrainAudio` / `core.AudioChunk` | both qualified paths produce timestamped PCM; their guest resource envelopes and event semantics remain ABI-specific |
 
 This separation prevents one guest ABI's numeric values or serialization format
 from leaking into the other while keeping the frontend lifecycle stable.
@@ -303,3 +325,10 @@ go vet ./...
 
 Without `ARAM_TEST_DATA`, commercial-corpus tests skip while all synthetic,
 fuzz-seed, stack-contract, lifecycle, rendering, and codec tests still run.
+
+Execution remains deliberately evidence-qualified. The v1/v2 decoder accepts
+the observed normal layouts, the observed `0xfc` flag form, and the observed
+zero-filled 32-byte length prefix; compression and other descriptor layouts stay
+typed unsupported. GNEX32 remains the one observed version-4 layout/profile.
+Unknown opcodes and services fault with offsets rather than being guessed as
+successful operations.

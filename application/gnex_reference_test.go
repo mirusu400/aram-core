@@ -1,8 +1,6 @@
 package application
 
 import (
-	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -11,18 +9,14 @@ import (
 	"strings"
 	"testing"
 
-	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/loader/gnex"
 )
 
-// TestReferenceUnqualifiedGNEXPackagesAreRecognizedNotExecuted walks a real GNEX corpus
-// (point ARAM_TEST_DATA at a directory containing GNEX zips, e.g. an
-// aram-test checkout's corpus/gamearchive/SKT/GNEX) and checks that the
-// factory recognizes each unqualified title and reports the specific "not yet
-// executable" error from machine_load.go rather than a generic or
-// container-shaped one. This is a recognition claim, not an execution claim:
-// GVM bytecode is not run.
-func TestReferenceUnqualifiedGNEXPackagesAreRecognizedNotExecuted(t *testing.T) {
+// TestReferenceLegacyGNEXPackagesAreQualified walks the authorized corpus and
+// requires every recognized version-1/2 package to have an exact operational
+// profile. A newly added corpus package therefore remains fail-closed until it
+// receives its own execution qualification.
+func TestReferenceLegacyGNEXPackagesAreQualified(t *testing.T) {
 	root := os.Getenv("ARAM_TEST_DATA")
 	if root == "" {
 		t.Skip("ARAM_TEST_DATA is not set")
@@ -44,9 +38,6 @@ func TestReferenceUnqualifiedGNEXPackagesAreRecognizedNotExecuted(t *testing.T) 
 			return err
 		}
 		digest := sha256.Sum256(data)
-		if _, operational := gvmOperationalCorpora[hex.EncodeToString(digest[:])]; operational {
-			return nil
-		}
 		pkg, inspectErr := gnex.Inspect(data)
 		if errors.Is(inspectErr, gnex.ErrNotPackage) {
 			return nil
@@ -54,18 +45,11 @@ func TestReferenceUnqualifiedGNEXPackagesAreRecognizedNotExecuted(t *testing.T) 
 		if inspectErr != nil {
 			return inspectErr
 		}
-		_, createErr := NewFactory().Create(context.Background(), machinecore.Source{
-			Name:     filepath.Base(path),
-			ReaderAt: bytes.NewReader(data),
-			Size:     int64(len(data)),
-		})
-		if !errors.Is(createErr, ErrUnsupportedSource) {
-			t.Errorf("%s: Create error = %v, want ErrUnsupportedSource", path, createErr)
+		if pkg.Header.FormatVersion > 2 {
 			return nil
 		}
-		if !strings.Contains(createErr.Error(), pkg.Header.Title) {
-			t.Errorf("%s: error does not name the parsed title %q: %v", path, pkg.Header.Title, createErr)
-			return nil
+		if _, operational := gvmOperationalCorpora[hex.EncodeToString(digest[:])]; !operational {
+			t.Errorf("%s: legacy GNEX title %q is not operationally qualified", path, pkg.Header.Title)
 		}
 		packages++
 		return nil
@@ -74,7 +58,7 @@ func TestReferenceUnqualifiedGNEXPackagesAreRecognizedNotExecuted(t *testing.T) 
 		t.Fatal(err)
 	}
 	if packages == 0 {
-		t.Skip("ARAM_TEST_DATA contained no GNEX package")
+		t.Skip("ARAM_TEST_DATA contained no legacy GNEX package")
 	}
-	t.Logf("confirmed %d GNEX packages are recognized (not executed)", packages)
+	t.Logf("confirmed %d legacy GNEX packages are operationally qualified", packages)
 }

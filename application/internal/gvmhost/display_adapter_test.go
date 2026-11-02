@@ -243,6 +243,23 @@ func TestDisplayAdapterSpriteUsesDecoderMapperAndTransparencyAtomically(t *testi
 	}
 }
 
+func TestDisplayAdapterType8UndocumentedSelectorFailsAtomically(t *testing.T) {
+	display := newTestDisplay(t, 2, 1, DisplayOrientationDefault, SKTCompatibilityPalette{}, &frameCollector{})
+	if err := display.FillGVMDisplay(16); err != nil {
+		t.Fatal(err)
+	}
+	before := append([]byte(nil), display.drawing.pixels...)
+	err := display.DrawGVMSprite([]byte{8, 2, 1, 0, 0, 17, 182}, 0, 0)
+	if !errors.Is(err, ErrUnsupportedSKTPaletteIndex) {
+		t.Fatalf("type-8 selector 182 error = %v", err)
+	}
+	for index := range before {
+		if display.drawing.pixels[index] != before[index] {
+			t.Fatalf("failed type-8 draw mutated pixel %d", index)
+		}
+	}
+}
+
 func TestDisplayAdapterTransformedSpriteMirrorsUsingNativeAnchorConvention(t *testing.T) {
 	publisher := &frameCollector{}
 	display := newTestDisplay(t, 3, 1, DisplayOrientationDefault, testPalette{failSelector: -1}, publisher)

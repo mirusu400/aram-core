@@ -28,14 +28,18 @@ storage/reload and event delivery preserve the original buffer from offset zero.
 A tail jump missed in the earlier call-only scan connects the completed reload
 to the primary-entry wrapper. This establishes a conditional static chain, not
 proof that OS timer delivery, short reads or storage failures behave correctly.
-Compressed/prefixed variants remain outside this implementation.
+Compressed variants remain outside this implementation. The current decoder
+also unwraps the observed 32-byte length prefix and accepts the observed `0xfc`
+flag combination when the underlying v2 descriptor layout passes every normal
+bounds and ownership check.
 
 ## Decoded storage layout
 
 `loader/gnex.DecodeExecutionImage` is deliberately separate from recognition and
-factory selection. It accepts only an unprefixed, observed normal v2 layout
-(version byte 2, byte2=12, byte5=1), bounded to 128 KiB. The fields below are
-little-endian uint16 **offsets**, not counts:
+factory selection. It accepts the observed normal v1/v2 layout (version byte 1
+or 2, byte2=`0x0c` or the exact observed flagged value `0xfc`, byte5=1), bounded
+to 128 KiB. An observed zero-filled 32-byte length prefix is removed before
+decoding. The fields below are little-endian uint16 **offsets**, not counts:
 
 | Field | Meaning |
 |---|---|

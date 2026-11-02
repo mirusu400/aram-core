@@ -68,6 +68,37 @@ func TestDecodeExecutionImageVersion1UsesNormalDescriptorLayout(t *testing.T) {
 	}
 }
 
+func TestDecodeExecutionImageAcceptsObservedFCFlags(t *testing.T) {
+	input := executionFixture()
+	input[2] = 0xfc
+	got, err := DecodeExecutionImage(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Entry != 54 || len(got.Symbols) != 3 || len(got.Media) != 2 {
+		t.Fatalf("flagged layout = %+v", got)
+	}
+}
+
+func TestDecodeExecutionImageUnwrapsObservedLengthPrefix(t *testing.T) {
+	inner := executionFixture()
+	input := make([]byte, 32+len(inner))
+	binary.LittleEndian.PutUint32(input, 32)
+	copy(input[32:], inner)
+	got, err := DecodeExecutionImage(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Header.PrefixOffset != 0 || got.Entry != 54 || len(got.Buffer) != len(inner) ||
+		len(got.Symbols) != 3 || len(got.Media) != 2 {
+		t.Fatalf("prefixed layout = %+v", got)
+	}
+	input[32+76] = 0
+	if got.Symbols[0].Data[0] != 0xaa {
+		t.Fatal("prefixed input ownership leaked")
+	}
+}
+
 func TestExecutionImageVariantsAndBounds(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -77,6 +108,7 @@ func TestExecutionImageVariantsAndBounds(t *testing.T) {
 		{"short", func(b []byte) []byte { return b[:40] }, false},
 		{"version", func(b []byte) []byte { b[0] = 3; return b }, true},
 		{"compression", func(b []byte) []byte { b[2] = 4; return b }, true},
+		{"unknown_flags", func(b []byte) []byte { b[2] = 0x1c; return b }, true},
 		{"mode", func(b []byte) []byte { b[5] = 4; return b }, true},
 		{"header_overlap", func(b []byte) []byte { binary.LittleEndian.PutUint16(b[0x2c:], 48); return b }, false},
 		{"misaligned", func(b []byte) []byte { binary.LittleEndian.PutUint16(b[0x2e:], 75); return b }, false},

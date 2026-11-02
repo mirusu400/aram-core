@@ -39,6 +39,74 @@ func TestGVMNewOperationalCorpora(t *testing.T) {
 	}
 }
 
+func TestGVMAlternateOuterPackagesMatchQualifiedSGS(t *testing.T) {
+	for _, tc := range []struct {
+		name, digest, frame string
+	}{
+		{"nom", GVMNomAlternateSHA256, "b0965f771b5751c079c4dcb0206353997ef81297def6926fa8d595f462ed2e57"},
+		{"fruit", GVMFruitAlternateSHA256, "557304040f245962d5b825014670e627a6059de30e1dfa76dfb764350f2c998e"},
+		{"fantasy", GVMFantasyAlternateSHA256, "c20bf73ba70ef80c90f394651d20e20cbc02e7628cb9ad454cc6ace71feaa83e"},
+		{"north", GVMNorthAlternateSHA256, "5d6d64798c67f9187f0de2db624e5c3099ea83074924f1363ca58b0da8cff9ac"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			machine := newGVMCorpusMachine(t, tc.digest)
+			if err := machine.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			stepGVMCorpusFrames(t, machine, 120)
+			if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != tc.frame {
+				t.Fatalf("frame = %s, want %s", got, tc.frame)
+			}
+		})
+	}
+}
+
+func TestGVMExpandedOperationalCorpora(t *testing.T) {
+	for _, tc := range []struct {
+		name, digest, control, first, after string
+	}{
+		{"kang-ho-dong", GVMKangHoDongOperationalSHA256, "num2", "1d7d8a824a9142dd848dea5fd93fd2928744058369fd0cffc380f99f0b64b5f4", "80c40414cf957a978004840deaf0d3aa2fe7445b392cea2915ebc13351010cc0"},
+		{"clean-time", GVMCleanTimeOperationalSHA256, "select", "83d6cafd942a708017657123c75371139cba7bb05f09f06c3415229db271b2c0", "09d5ad8827a39c3e513e5ad7861f3d0f1ff3d2da892a6c130642c0fa0d234123"},
+		{"sword-master", GVMSwordMasterOperationalSHA256, "select", "77cf92d2436a8498497d9f843a2720b1b50322d6400d789484f14f129b55d203", "96c9e75318744bad5939659b1b0130b7e3d878455ebd0e2ba8c076070d1d2bb8"},
+		{"crow", GVMCrowOperationalSHA256, "select", "32992cc7aef3573b4fd459e19adec377b7f8905862bae85a545a89fe72fc5948", "e566f6bf76c66f3b62e16618918c5acdadc3952150523c373d44a32923ba0709"},
+		{"hero-legend", GVMHeroLegendOperationalSHA256, "select", "f59cdd5856a3c1155c36fdc2d1a291c9dac59146c4706853bbc91917b180fdcf", "155ec8e12778d36b35b736fe0eedf46f643335070fc5a1d0bbbb374bd129e9e1"},
+		{"fight-oinyong", GVMFightOinyongOperationalSHA256, "select", "4621348b398adc6ecf9b83e2f8f6db8524eca43e95e95483fde4fe48d610c117", "6e285b2bf3a510e945b67cef2f3dbd9157cfb478d2f661cfd12a99b9cb16a566"},
+		{"fight-oinyong-2", GVMFightOinyong2OperationalSHA256, "select", "4621348b398adc6ecf9b83e2f8f6db8524eca43e95e95483fde4fe48d610c117", "6e285b2bf3a510e945b67cef2f3dbd9157cfb478d2f661cfd12a99b9cb16a566"},
+		{"shining-stone", GVMShiningStoneOperationalSHA256, "select", "ec7f659a4f85af2708926fab1d7a614774e2bb0e54589e471868af01e6d2386a", "7d3c3d43671aa5ead50ca92572692da2657bc91fd15cd0cd2207d9c9db2ac8d7"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			machine := newGVMCorpusMachine(t, tc.digest)
+			if err := machine.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			stepGVMCorpusFrames(t, machine, 120)
+			if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != tc.first {
+				t.Fatalf("initial frame = %s, want %s", got, tc.first)
+			}
+			pressGVMCorpusKey(t, machine, tc.control)
+			stepGVMCorpusFrames(t, machine, 120)
+			if got := fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer())); got != tc.after {
+				t.Fatalf("after %s frame = %s, want %s", tc.control, got, tc.after)
+			}
+		})
+	}
+}
+
+func TestGVMDirectSoftKeyDispatch(t *testing.T) {
+	machine := newGVMCorpusMachine(t, GVMHeroLegendOperationalSHA256)
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stepGVMCorpusFrames(t, machine, 120)
+	pressGVMCorpusKey(t, machine, "soft-left")
+	diagnostics := machine.(interface {
+		GVMInputDispatchDiagnostics() GVMInputDispatchDiagnostics
+	}).GVMInputDispatchDiagnostics()
+	if diagnostics.DispatchCount != 1 || diagnostics.GuestCode != 13 || diagnostics.Result.Err != nil {
+		t.Fatalf("soft-key dispatch = %+v", diagnostics)
+	}
+}
+
 func TestGVMFantasyOperationalProgression(t *testing.T) {
 	machine := newGVMCorpusMachine(t, GVMFantasyOperationalSHA256)
 	ctx := context.Background()

@@ -29,11 +29,12 @@ func TestSKTNumericGuestCode(t *testing.T) {
 	}
 }
 
-func TestSKTFiveWayGuestCode(t *testing.T) {
+func TestSKTDirectGuestCode(t *testing.T) {
 	tests := []struct {
 		key  profile.KeyCode
 		want uint16
 	}{
+		{profile.KeySoft1, 13},
 		{profile.KeyUp, 16},
 		{profile.KeyDown, 17},
 		{profile.KeyLeft, 18},
@@ -44,6 +45,11 @@ func TestSKTFiveWayGuestCode(t *testing.T) {
 		got, ok := SKTGuestCode(test.key)
 		if !ok || got != test.want {
 			t.Fatalf("SKTGuestCode(%d) = (%d,%v), want (%d,true)", test.key, got, ok, test.want)
+		}
+	}
+	for _, key := range []profile.KeyCode{profile.KeySoft2, profile.KeySoft3, profile.KeyClear, profile.KeySend, profile.KeyEnd} {
+		if got, ok := SKTGuestCode(key); ok {
+			t.Fatalf("SKTGuestCode(%d) = (%d,true)", key, got)
 		}
 	}
 }

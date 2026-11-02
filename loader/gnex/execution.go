@@ -44,8 +44,10 @@ type ExecutionImage struct {
 	SymbolRAM       []byte // contiguous mutable symbol storage, excluding descriptors/media
 }
 
-// DecodeExecutionImage models only the hash-qualified normal, unprefixed v1/v2
-// descriptor layout described in docs/gvm-execution-subset.md. Unlike native
+// DecodeExecutionImage models the hash-qualified normal v1/v2 descriptor layout
+// described in docs/gvm-execution-subset.md. It also unwraps the observed
+// 32-byte length prefix before decoding, returning buffer-relative offsets for
+// the normalized inner SGS image. Unlike native
 // pointer arithmetic, it rejects malformed spans, incomplete records, file
 // overreads and overlapping descriptor/data regions as emulator safety policy.
 // No recognition or factory behavior changes merely by calling this function.
@@ -53,10 +55,17 @@ func DecodeExecutionImage(data []byte) (ExecutionImage, error) {
 	bad := func(offset int, reason string) (ExecutionImage, error) {
 		return ExecutionImage{}, formatError("SGS", int64(offset), reason)
 	}
+	if len(data) >= 33 && binary.LittleEndian.Uint32(data[:4]) == 32 &&
+		bytes.Equal(data[4:32], make([]byte, 28)) && (data[32] == 1 || data[32] == 2) {
+		data = data[32:]
+	}
 	if len(data) < 0x34 || len(data) > 128<<10 {
 		return bad(0, "execution image size outside supported bounds")
 	}
-	if (data[0] != 1 && data[0] != 2) || data[2] != 12 || data[5] != 1 {
+	// 0xfc is an observed v2 flag combination using the same descriptor and
+	// storage layout as the ordinary 0x0c image. Do not generalize the high
+	// nibble without corpus or reference evidence for another combination.
+	if (data[0] != 1 && data[0] != 2) || (data[2] != 0x0c && data[2] != 0xfc) || data[5] != 1 {
 		return ExecutionImage{}, ErrUnsupportedExecutionVariant
 	}
 	header, err := ParseHeader(data)

@@ -145,6 +145,10 @@ func TestGNEX32VirusMenuBranchProbe(t *testing.T) {
 	if os.Getenv("ARAM_TEST_DATA") == "" {
 		t.Skip("ARAM_TEST_DATA is not set")
 	}
+	// Qualify the corpus before starting subtests. If the exact Virus package is
+	// absent, skipping only inside each subtest leaves the parent with empty
+	// coverage maps and turns an unavailable optional fixture into a failure.
+	_, _ = findAuthorizedPackage(t, GNEX32VirusSHA256)
 	selectedFrames := make(map[[32]byte]bool)
 	resultFrames := make(map[[32]byte]bool)
 	reachedServices := make(map[uint16]bool)

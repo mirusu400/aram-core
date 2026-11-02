@@ -2,10 +2,13 @@ package gvmhost
 
 import "github.com/mirusu400/aram-core/profile"
 
-// SKTGuestCode maps the authenticated five-way pad and numeric keypad paths to
-// the selected GVM guest codes. Stateful soft-key wrappers remain excluded.
+// SKTGuestCode maps the authenticated five-way pad, first soft key and numeric
+// keypad paths to the selected GVM guest codes. The other two soft-key wrappers
+// have distinct stateful dispatch routes and remain excluded.
 func SKTGuestCode(key profile.KeyCode) (uint16, bool) {
 	switch key {
+	case profile.KeySoft1:
+		return 13, true
 	case profile.KeyUp:
 		return 16, true
 	case profile.KeyDown:

@@ -33,7 +33,7 @@ Every fetched opcode advances PC before its handler.
 | `09` | u8 symbol, u8 element; store raw top16 as LE16 at symbol+2*element, pop once, PC=P+2; depth65 rejected |
 | `0a` | u8 symbol; store raw top16 as LE16 at symbol start, pop once, PC=P+1; depth65 rejected |
 | `0b` | Copy signed top index depth-1 to a private32-bit scalar, no stack effects or inline operands, PC=P |
-| `0c` | Partial support: after observed `0b`, restore a valid non-growing depth from the saved index without changing backing words, PC=P |
+| `0c` | After observed `0b`, restore any valid depth from the saved top index, including native backing words hidden by later pops, PC=P |
 | `0d` | Increment top16 modulo65536 without popping or operands, PC=P; depth65 accepted |
 | `0e` | Decrement top16 modulo65536 without popping or operands, PC=P; depth65 accepted |
 | `0f` | Duplicate raw top16, depth64 grows to65, empty/overflow fault under host policy, PC=P |
@@ -46,8 +46,10 @@ Every fetched opcode advances PC before its handler.
 | `1f` | Signed16 a>=b, replacing a,b with canonical zero or one |
 | `20` | Signed16 a<=b, replacing a,b with canonical zero or one |
 | `21` | Raw16 a==b, replacing two words with canonical zero or one, no inline operands, PC=P |
+| `27` | u8 destination/index-symbol/index-element, signed i8 immediate; store sign-extended LE16 at destination[index-symbol[index-element]], PC=P+4; depth65 rejected |
 | `2f` | u8 destination symbol/element, u8 source symbol/element; copy one raw LE16 word, no stack effects |
 | `31` | u8 symbol, u8 element, signed i8 immediate; store signextended LE16 at symbol+2*element, PC=P+3 |
+| `32` | u8 destination/source/index-symbol/index-element; copy source[index-symbol[index-element]] into destination[0], PC=P+4 |
 | `35` | u8 destination symbol, u8 source symbol; copy first rawLE16 word, no stack effects, PC=P+2 |
 | `36` | u8 symbol, signed i8 immediate; store signextended LE16 at symbol start, PC=P+2 |
 | `39` | u8 symbol, u8 element, signed i8 delta; add delta modulo65536 to the selected LE16 word, PC=P+3 |
@@ -67,6 +69,7 @@ Every fetched opcode advances PC before its handler.
 | `4e` | Configured address model only: replace top tagged address with its rawLE16 word, depth unchanged, PC=P |
 | `4f` | Configured address model only: store raw top16 as LE16 at RAM+2*signed16(next-to-top), pop two, PC=P |
 | `51` | Explicit service constructor only: write four device-query words through a tagged reference and pop once |
+| `52` | Explicit service constructor only: resize the selected media record, copy the configured NUL-terminated MIN, and pop once |
 | `55` | Explicit service constructor only: request an atomic drawing-buffer fill with byte `0xff`; no operands, stack effects or presentation |
 | `57` | Explicit service constructor only: signed top modulo182 selects a provider-remapped drawing-buffer fill, then pop once |
 | `59` | Explicit service constructor only: clamp signed top to `0..6`, forward a mapping-selection request and pop once; no presentation |
@@ -83,11 +86,15 @@ Every fetched opcode advances PC before its handler.
 | `76` | Explicit service constructor only: copy the full drawing buffer to the auxiliary buffer; no stack effects or presentation |
 | `77` | Explicit service constructor only: copy the full auxiliary buffer to the drawing buffer; no stack effects or presentation |
 | `78` | Explicit service constructor only: forward one unsuppressed guest display submission; no stack effects |
+| `79` | Explicit service constructor only: replace a signed media index with that record's raw uint16 byte length |
+| `7b` | Explicit service constructor only: resize a media record, zero the requested byte count, and pop both operands |
+| `86` | Configured address model only: store the low byte of a word at a signed byte offset from a tagged file/RAM address and pop three |
 | `90` | Explicit service constructor only: resolve signed top as a bounded media index, forward an owned payload copy and pop once |
 | `91` | Explicit service constructor only: forward the selected device profile's audio type to a reset request; no stack effects or playback |
 | `96`, `97` | Pop16 argument, call a ret-only native callee in this build, PC=P |
 | `9a` | Explicit service constructor only: forward signed16 interval and raw16 selector to a borrowed timer-request sink, then pop two, PC=P |
 | `a1` | Explicit service constructor only: replace two signed16 bounds with an equal bound or a draw in the half-open signed range, pop once, PC=P |
+| `a2` | Explicit service constructor only: replace a signed threshold with whether one CRT-compatible random draw modulo100 is below it |
 | `b4` | Configured address model only: scalar operation on a tagged word array, pop four, PC=P |
 | `b5` | Configured address model only: forward live-source operation on two tagged word arrays, pop four, PC=P |
 | `b9` | Explicit service constructor only: write local hour/minute/second/millisecond from one virtual-clock sample and pop once |
@@ -99,7 +106,8 @@ The host shares the existing immediate-branch policy: require all three operand
 bytes before underflow, validate only a taken target, then commit one pop and
 PC update. Native code instead publishes the pop before conditional target reads
 and retains backing. Existing host popped-slot zeroing remains intentional
-hygiene, not reference backing parity; growing `0c` is still unsupported.
+hygiene; a private backing copy now lets growing `0c` reproduce the retained
+native words without exposing them through `Stack()` while they are popped.
 The kernel's `9a` support is deliberately request-only. It does not install a
 shared timer, advance virtual time, deliver a callback or call `BeginDispatch`.
 The sink adapter must preserve the authenticated interval-below-10 bypass and
@@ -133,10 +141,11 @@ Opcode `70` uses the same validated media boundary and applies the exact
 zero/nonzero horizontal-mirror placement, including signed16 origin wrapping.
 Opcodes `76` and `77` expose only opposite-direction full display-buffer copies.
 Neither operation publishes a frame or initializes buffer geometry.
-Opcode `91` exposes the selected audio-backend reset boundary without claiming
-media decoding, sound output or native audio-object equivalence.
-Opcode `90` forwards a bounded media payload but leaves its first-byte format,
-decoder, playback lifecycle and device semantics to the explicit adapter.
+Opcode `91` exposes the selected audio-backend reset boundary. Opcode `90`
+forwards a bounded media payload and leaves decoding and playback lifecycle to
+the explicit adapter. The application operational profile recognizes the
+corpus-observed `02 00` plus MMMD/MThd/RIFF envelope and emits timestamped PCM;
+the VM package itself still makes no native audio-object-equivalence claim.
 Opcode `78` is a guest presentation boundary only when an adapter has valid
 geometry, packed-color conversion, buffers and suppression-gate state.
 
@@ -204,7 +213,8 @@ those prerequisites or count as successful timer delivery. See the
   Overlapping views share stores, including changes to future instruction
   fetches. Each RAM binding receives an independent copy, even if inputs alias.
 - `Program()`, `Symbol(index uint8)` and `Stack()` return independent copies.
-  They are inspection methods, not a serialized VM save-state schema.
+  They are inspection methods. `Snapshot`/`Restore` provide the validated,
+  detached VM component used by the application-level volatile state envelope.
 - No native pointers, SGS record parser, reserved runtime symbols, read-only
   policy, services, or materialization rules are inferred by this package.
 
@@ -485,29 +495,30 @@ post-fetch PC rules apply; the native error helper is not emulated.
 that scalar; no operand values, memory, saved returns, depth or post-fetch PC are
 changed. It is not a NOP or a stack checkpoint. A separate private validity flag
 marks that this host VM has observed a write. Its initially-unset state is host
-policy because the reference scalar's initial value, reset and cross-dispatch
-lifetime have not been established. No consumer, serialization, clone or reset
-semantics are inferred. Internal tests verify the actual hidden write in addition
-to public execution checks; unchanged public stack output alone would not prove it.
+policy because the reference scalar's initial value and native reset behavior
+have not been established. `0c` is its only consumer; volatile snapshots retain
+the marker and private backing, while dispatch re-entry invalidates permission
+to consume an old marker. Internal tests verify the actual hidden write in
+addition to public execution checks; unchanged public stack output alone would
+not prove it.
 
-`0c` has deliberately partial support. Its independently verified native handler
+`0c` implements the independently verified native handler, which
 assigns the saved32-bit scalar to the operand top index, without copying values,
 clearing storage, consuming the marker or changing PC beyond opcode fetch. The
-host supports this only after an observed `0b`, with the saved index in -1..64
-and the resulting depth no greater than the current live depth. Bounds are checked
-before adding one. Success changes only depth and preserves all backing words,
-including newly hidden words, marker validity/value, returns, memory and symbols.
+host requires an observed `0b` and a saved index in -1..64. Bounds are checked
+before adding one. Popped public slots retain zero hygiene, while a separate
+native backing copy preserves their values; a growing restore copies those words
+back into the live stack. Success preserves marker validity/value, returns,
+memory and symbols.
 A post-save word mutation remains visible: this is not a historical snapshot.
 
-Missing, invalid or growing markers retain sticky `UnsupportedOpcodeError` with
+Missing or invalid markers retain sticky `UnsupportedOpcodeError` with
 the instruction offset and post-fetch PC. These are unsupported host domains,
-not native validity guards. The native operation can re-expose backing words,
-but existing host pops clear discarded slots and full native backing/lifecycle
-provenance is unresolved. No zero-fill, whole-stack snapshot, global pop-clearing
-change or guessed initial marker is used to conceal that gap. A standalone `0c`
+not native validity guards. No guessed initial marker is used. A standalone `0c`
 therefore remains unsupported, including in the exhaustive unknown-opcode test.
 Repeated supported restores preserve the marker; a later `0b` overwrites it.
-This restriction advances neither reset/save-state support nor product startup.
+Volatile snapshots include the hidden backing copy so a post-load growing restore
+reproduces the same words.
 
 `4e` is supported only with an explicitly configured address space. It replaces
 one raw16 stack address in place with the rawLE16 word resolved through `ReadWord`,
