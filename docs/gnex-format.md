@@ -188,13 +188,26 @@ emulator was read, never run.
   end returns the next image byte, or the next non-empty arena record, then the
   arena's zero tail.
 - **Sprites.** The sprite entry points ignore a kind outside 2..8 and draw
-  nothing for a zero width or height read from the header.
+  nothing for a zero width or height read from the header. Palette selectors
+  index the 182-byte remap row without a bound; past it the emulator reads its
+  idle polygon buffer, so a palette selector above 181 draws device byte 0.
+  Raw type-8 values above 181 still fault: the emulator reads uninitialized
+  stack for them.
+- **Text formatting.** `8a`..`8e` use the emulator's integer formatter (`d`,
+  `x`, `X`, `c`, flags, width, precision; other conversions literal; 255-byte
+  cap) and `89` its one-string formatter. Results go through the native media
+  resize, so an odd growth leaves one extra byte.
+- **Keys.** Titles label guest code 13 as CLR, so both the clear key and the
+  first soft key send it. Code 15 ends the script on the emulator and 14 has
+  its own stateful route; neither is mapped.
 - **Ellipses.** Opcode `65` fills (one span per row) and `64` outlines, both
   with the native midpoint decision values.
 - **Leaving the title.** `c4` copies a NUL-terminated media string, records a
   browser request and stops the machine; `c5` stops it. Both reach the host
-  through `core.ExternalRequestMachine`. Network requests (`c3`) remain
-  unsupported and fault with their offset.
+  through `core.ExternalRequestMachine`. `c3` asks the host to run another
+  script by its (provider, script) ID; the emulator stops the timers and halts
+  first, then loads a stored script or starts a download. ARAM has neither, so
+  the launch fails and the machine stops.
 
 ## Runtime behavior
 

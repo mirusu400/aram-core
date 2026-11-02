@@ -726,6 +726,13 @@ func (d *DisplayAdapter) mapSprite(sprite indexedSprite) ([]byte, error) {
 		selector := index
 		if sprite.palette != nil {
 			selector = sprite.palette[index]
+			if selector > lastSKTPaletteSelector {
+				// The native palette path indexes the 182-byte remap row
+				// without a bound; past it the reference emulator reads its
+				// idle polygon vertex buffer, which holds zero.
+				mappedSet[index] = true
+				continue
+			}
 		}
 		value, err := d.palette.Map(d.mapping, int16(selector))
 		if err != nil {

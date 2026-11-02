@@ -10,6 +10,9 @@ import (
 
 var ErrUnsupportedSKTPaletteIndex = errors.New("gvmhost: unsupported SKT palette index")
 
+// lastSKTPaletteSelector is the last of the 182 public COLOR8 selectors.
+const lastSKTPaletteSelector = 181
+
 // SKTCompatibilityPalette supplies the exact selected-corpus palette-to-packed
 // mapping and a portable RGB332 presentation policy. The latter is deliberately
 // independent of the unresolved native normal-orientation component ramps.

@@ -12,7 +12,10 @@ import (
 // whose single file-backed media record holds a NUL-terminated URL.
 func gvmHostRequestArchive(t *testing.T, code []byte, url string) []byte {
 	t.Helper()
-	const entry, event, input, ds, ps, dm, pm = 54, 64, 72, 128, 132, 136, 140
+	const entry, event, input, ds, ps, dm, pm = 54, 112, 120, 128, 132, 136, 140
+	if len(code) > event-entry {
+		t.Fatalf("code of %d bytes overlaps the event entry", len(code))
+	}
 	payload := append([]byte(url), 0)
 	sgs := make([]byte, pm+len(payload))
 	sgs[0], sgs[2], sgs[5], sgs[10] = 2, 12, 1, 'G'
@@ -56,6 +59,21 @@ func TestGVMBrowserRequestStopsMachineAndExposesOutbox(t *testing.T) {
 
 func TestGVMExitRequestStopsMachineWithoutRequests(t *testing.T) {
 	machine := newOperationalFixture(t, gvmHostRequestArchive(t, []byte{0xc5}, "unused"))
+	defer machine.Close()
+	if err := machine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if machine.State() != machinecore.StateStopped || len(machine.ExternalRequests()) != 0 {
+		t.Fatalf("state = %s requests = %+v", machine.State(), machine.ExternalRequests())
+	}
+}
+
+// ARAM has no other stored scripts, so a script launch ends the title the way
+// a failed launch does on the reference emulator.
+func TestGVMScriptLaunchStopsMachine(t *testing.T) {
+	// provider, script, name media 0, word, data media 0, word, c3
+	code := []byte{0x05, 1, 0x05, 2, 0x05, 0, 0x05, 0, 0x05, 0, 0x05, 0, 0xc3}
+	machine := newOperationalFixture(t, gvmHostRequestArchive(t, code, "next"))
 	defer machine.Close()
 	if err := machine.Start(context.Background()); err != nil {
 		t.Fatal(err)

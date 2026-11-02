@@ -21,6 +21,8 @@ func TestFormatSignedWordIntoDynamicMediaString(t *testing.T) {
 	}
 }
 
+// The result goes through the native media resize, which rounds an odd
+// growth up by one byte, so an 11-byte string leaves a 12-byte record.
 func TestFormatSignedWordWithLiteralPercent(t *testing.T) {
 	sink := new(copiedMedia)
 	program := []byte{0x05, 0, 0x05, 1, 0x05, 45, 0x8a, 0x05, 0, 0x90, 0xff}
@@ -30,7 +32,7 @@ func TestFormatSignedWordWithLiteralPercent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := vm.Run(7); err != nil || !bytes.Equal(sink.data, []byte("Share: 45%\x00")) {
+	if err := vm.Run(7); err != nil || !bytes.Equal(sink.data, []byte("Share: 45%\x00\x00")) {
 		t.Fatalf("run=%v formatted=%q", err, sink.data)
 	}
 }
@@ -64,7 +66,7 @@ func TestFormatThreeSignedWords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := vm.Run(9); err != nil || !bytes.Equal(sink.data, []byte("3/-3/5\x00")) || len(vm.Stack()) != 0 {
+	if err := vm.Run(9); err != nil || !bytes.Equal(sink.data, []byte("3/-3/5\x00\x00")) || len(vm.Stack()) != 0 {
 		t.Fatalf("three values: err=%v data=%q stack=%x", err, sink.data, vm.Stack())
 	}
 }

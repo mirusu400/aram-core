@@ -136,6 +136,27 @@ func TestDisplaySpriteEntryPointsSkipWhatNativeSkips(t *testing.T) {
 	}
 }
 
+// A palette-indexed sprite resolves each palette selector through the 182-byte
+// native remap row without bounding it. Past the row the reference emulator
+// reads its idle polygon buffer, so a selector above 181 draws device byte 0.
+func TestDisplayPaletteSelectorPastRemapRowDrawsDeviceZero(t *testing.T) {
+	d := newTestDisplay(t, 2, 1, DisplayOrientationDefault, testPalette{failSelector: -1}, new(frameCollector))
+	for i := range d.drawing.pixels {
+		d.drawing.pixels[i] = 0x55
+	}
+	// Type 7, 2x1, palette entry 0 = selector 198, entry 1 = selector 3.
+	palette := make([]byte, 16)
+	palette[0], palette[1] = 198, 3
+	sprite := append([]byte{7, 2, 1, 0, 0}, make([]byte, 16)...)
+	sprite = append(sprite, 0x01)
+	if err := d.DrawGVMSpriteWithPalette(sprite, palette, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := d.drawing.pixels, []byte{0, 3}; got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("pixels = %v, want %v", got, want)
+	}
+}
+
 type testPalette struct {
 	failSelector int16
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 )
 
 var (
@@ -1424,20 +1425,11 @@ func (v *VM) Step() error {
 		if end < 0 {
 			return fail(ErrInvalidMediaResource)
 		}
-		format = format[:end]
-		if !validGVMDecimalFormat(format, arguments) {
-			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
-			return v.fault
-		}
-		values := make([]any, arguments)
+		values := make([]int32, arguments)
 		for i := range values {
-			values[i] = int16(v.stack[v.depth-arguments+i])
+			values[i] = int32(int16(v.stack[v.depth-arguments+i]))
 		}
-		formatted := fmt.Sprintf(string(format), values...)
-		if len(formatted) >= 256 {
-			return fail(ErrInvalidMediaResource)
-		}
-		v.services.media[destination] = append([]byte(formatted), 0)
+		v.storeMediaString(int(destination), formatGVMNumbers(format[:end], values))
 		v.depth -= 2 + arguments
 		clear(v.stack[v.depth : v.depth+2+arguments])
 	case 0x84:
@@ -1591,6 +1583,40 @@ func (v *VM) Step() error {
 		v.depth -= 2
 		v.stack[v.depth-1] = inside
 		clear(v.stack[v.depth : v.depth+2])
+	case 0xc3:
+		// Run another script. Stack: provider and script ID words, a name
+		// media index, a word, a data media index and a word. The native handler
+		// stops the timers, stores the request and points the PC at a halt byte.
+		if v.services == nil {
+			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
+			return v.fault
+		}
+		if v.services.hostRequest == nil {
+			return fail(ErrHostRequestUnavailable)
+		}
+		if v.depth < 6 {
+			return fail(ErrStackUnderflow)
+		}
+		args := v.stack[v.depth-6 : v.depth]
+		launch := ScriptLaunch{ID: [2]uint16{args[0], args[1]}, Words: [2]int16{int16(args[3]), int16(args[5])}}
+		for i, slot := range [2]int{2, 4} {
+			index := int(int16(args[slot]))
+			if index < 0 || index >= len(v.services.media) {
+				return fail(ErrInvalidMediaIndex)
+			}
+			record := v.services.media[index]
+			end := bytes.IndexByte(record, 0)
+			if end < 0 {
+				return fail(ErrInvalidMediaResource)
+			}
+			launch.Strings[i] = string(record[:end])
+		}
+		if err := v.services.hostRequest.RequestGVMLaunch(launch); err != nil {
+			return fail(err)
+		}
+		v.depth -= 6
+		clear(v.stack[v.depth : v.depth+6])
+		v.halted = true
 	case 0xc4, 0xc5:
 		// c4 opens the handset browser at the NUL-terminated URL in the top
 		// media record and c5 exits. Both end the dispatch: the native handler
@@ -2604,20 +2630,37 @@ func (v *VM) Step() error {
 		}
 		binary.LittleEndian.PutUint16(word, binary.LittleEndian.Uint16(word)+delta)
 		v.pc += width
-	case 0x48:
-		// Store the top word into an indexed element without popping it.
-		if len(v.code)-v.pc < 3 {
+	case 0x48, 0x49:
+		// Store the top word, without popping it, into an I (48) or X (49)
+		// element.
+		mode := symbolIndexed
+		if op == 0x49 {
+			mode = symbolFirstIndexed
+		}
+		width := mode.width()
+		if len(v.code)-v.pc < width {
 			return fail(ErrTruncated)
 		}
 		if v.depth == 0 {
 			return fail(ErrStackUnderflow)
 		}
-		word, err := v.symbolWordOperand(symbolIndexed, v.code[v.pc:v.pc+3])
+		word, err := v.symbolWordOperand(mode, v.code[v.pc:v.pc+width])
 		if err != nil {
 			return fail(err)
 		}
 		binary.LittleEndian.PutUint16(word, v.stack[v.depth-1])
-		v.pc += 3
+		v.pc += width
+	case 0xa4:
+		// Replace the signed top word with its sign: -1, 0 or 1.
+		if v.depth == 0 {
+			return fail(ErrStackUnderflow)
+		}
+		switch top := int16(v.stack[v.depth-1]); {
+		case top > 0:
+			v.stack[v.depth-1] = 1
+		case top < 0:
+			v.stack[v.depth-1] = 0xffff
+		}
 	case 0x2c:
 		// Store a signed byte immediate into an array element selected by the
 		// first word of another symbol. The native handler consumes the array
@@ -2872,27 +2915,127 @@ func (v *VM) Step() error {
 	return nil
 }
 
-func validGVMDecimalFormat(format []byte, arguments int) bool {
-	count := 0
+// formatGVMNumbers mirrors the GVM2X integer formatter (sub_41a500) behind
+// opcodes 8a..8e. A conversion takes ' ', '#', '+', '-' and '0' flags, a
+// width and a precision, then d (signed), x or X (the 32-bit sign-extended
+// word) or c (its low byte). Any other conversion character, '%' included, is
+// copied literally without consuming a value. Once every value is consumed a
+// further '%' is literal too; the conversion that runs out reads zero where
+// the native handler reads stack garbage. Output stops at 255 bytes.
+func formatGVMNumbers(format []byte, values []int32) []byte {
+	const limit = 255
+	out := make([]byte, 0, limit)
+	next := 0
+	digit := func(c byte) bool { return c >= '0' && c <= '9' }
+	// emit appends n copies of c and reports whether there is room for more.
+	emit := func(c byte, n int) bool {
+		for ; n > 0; n-- {
+			out = append(out, c)
+			if len(out) >= limit {
+				return false
+			}
+		}
+		return true
+	}
 	for i := 0; i < len(format); i++ {
-		if format[i] != '%' {
+		if format[i] != '%' || next > len(values) {
+			if !emit(format[i], 1) {
+				return out
+			}
 			continue
 		}
-		if i+1 < len(format) && format[i+1] == '%' {
-			i++
-			continue
-		}
-		count++
-		i++
-		start := i
-		for i < len(format) && format[i] >= '0' && format[i] <= '9' {
-			i++
-		}
-		if i-start > 2 || i >= len(format) || format[i] != 'd' {
-			return false
+		var sign byte
+		alt, left, zero, width, precision := false, false, false, 0, -1
+	spec:
+		for i++; i < len(format); i++ {
+			c := format[i]
+			switch {
+			case c == ' ':
+				if sign == 0 {
+					sign = ' '
+				}
+			case c == '#':
+				alt = true
+			case c == '+':
+				sign = '+'
+			case c == '-':
+				left = true
+			case c == '0':
+				zero = true
+			case c == '.':
+				precision = 0
+				for i+1 < len(format) && digit(format[i+1]) {
+					i++
+					precision = 10*precision + int(format[i]-'0')
+				}
+			case c >= '1' && c <= '9':
+				width = 0
+				for ; i < len(format) && digit(format[i]); i++ {
+					width = 10*width + int(format[i]-'0')
+				}
+				i--
+			case c == 'd' || c == 'x' || c == 'X' || c == 'c':
+				var value int32
+				if next < len(values) {
+					value = values[next]
+				}
+				next++
+				var digits, prefix []byte
+				pad := 0
+				if c == 'c' {
+					digits, sign, pad = []byte{byte(value)}, 0, 0
+				} else {
+					magnitude, base := uint32(value), uint32(10)
+					if c == 'd' {
+						if value < 0 {
+							magnitude, sign = uint32(-int64(value)), '-'
+						}
+					} else {
+						base, sign = 16, 0
+						if alt && magnitude != 0 {
+							prefix = []byte{'0', c}
+						}
+					}
+					if precision >= 0 {
+						zero = false
+					}
+					if magnitude != 0 || precision != 0 {
+						text := strconv.FormatUint(uint64(magnitude), int(base))
+						if c == 'X' {
+							text = strings.ToUpper(text)
+						}
+						digits = []byte(text)
+					}
+					pad = precision - len(digits)
+				}
+				total := len(digits) + max(pad, 0) + len(prefix)
+				if sign != 0 {
+					total++
+				}
+				ok := left || zero || emit(' ', width-total)
+				ok = ok && (sign == 0 || emit(sign, 1))
+				for _, b := range prefix {
+					ok = ok && emit(b, 1)
+				}
+				ok = ok && (!zero || left || emit('0', width-total))
+				ok = ok && emit('0', pad)
+				for _, b := range digits {
+					ok = ok && emit(b, 1)
+				}
+				ok = ok && (!left || emit(' ', width-total))
+				if !ok {
+					return out
+				}
+				break spec
+			default:
+				if !emit(c, 1) {
+					return out
+				}
+				break spec
+			}
 		}
 	}
-	return count == arguments
+	return out
 }
 
 // storeMediaString mirrors the native resize-then-strcpy result path: the

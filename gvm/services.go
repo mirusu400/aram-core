@@ -211,12 +211,24 @@ type EllipseOutlineSink interface {
 }
 
 // HostRequestSink receives the handset actions that end a GVM application.
-// Opcodec4 opens the handset browser at a URL and opcodec5 exits; both end the
-// current dispatch, after which the native runtime stops the script.
-// Implementations must complete atomically and must not reenter the VM.
+// Opcodec3 asks the host to run another script, opcodec4 opens the handset
+// browser at a URL and opcodec5 exits. Each ends the current dispatch, after
+// which the native runtime stops the script. Implementations must complete
+// atomically and must not reenter the VM.
 type HostRequestSink interface {
+	RequestGVMLaunch(launch ScriptLaunch) error
 	RequestGVMBrowser(url string) error
 	RequestGVMExit() error
+}
+
+// ScriptLaunch is opcodec3's request. The reference emulator stops the timers,
+// looks a stored script up by ID (the pair its *SWAP*GETID command reports)
+// and runs it, or starts a download when none matches; the remaining
+// arguments are passed through for the launched script.
+type ScriptLaunch struct {
+	ID      [2]uint16
+	Strings [2]string
+	Words   [2]int16
 }
 
 // SpriteDrawSink accepts opcode6f's validated media payload and signed guest

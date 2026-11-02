@@ -35,6 +35,9 @@ func TestSKTDirectGuestCode(t *testing.T) {
 		want uint16
 	}{
 		{profile.KeySoft1, 13},
+		// Titles label guest code 13 as CLR ("(OK/CLR)", "CLR EXIT") and
+		// treat it as cancel, so the clear/back key reaches it too.
+		{profile.KeyClear, 13},
 		{profile.KeyUp, 16},
 		{profile.KeyDown, 17},
 		{profile.KeyLeft, 18},
@@ -47,7 +50,7 @@ func TestSKTDirectGuestCode(t *testing.T) {
 			t.Fatalf("SKTGuestCode(%d) = (%d,%v), want (%d,true)", test.key, got, ok, test.want)
 		}
 	}
-	for _, key := range []profile.KeyCode{profile.KeySoft2, profile.KeySoft3, profile.KeyClear, profile.KeySend, profile.KeyEnd} {
+	for _, key := range []profile.KeyCode{profile.KeySoft2, profile.KeySoft3, profile.KeySend, profile.KeyEnd} {
 		if got, ok := SKTGuestCode(key); ok {
 			t.Fatalf("SKTGuestCode(%d) = (%d,true)", key, got)
 		}

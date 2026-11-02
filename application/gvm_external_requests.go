@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	machinecore "github.com/mirusu400/aram-core/core"
+	"github.com/mirusu400/aram-core/gvm"
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
@@ -38,6 +39,15 @@ func (r *gvmHostRequests) RequestGVMBrowser(url string) error {
 }
 
 func (r *gvmHostRequests) RequestGVMExit() error {
+	r.close = true
+	return nil
+}
+
+// RequestGVMLaunch ends the title. The reference emulator replaces the script
+// with a stored one of the same ID or starts a download when none matches;
+// ARAM holds no other scripts and no download service, so the launch fails
+// and the requesting script, already halted with its timers stopped, ends.
+func (r *gvmHostRequests) RequestGVMLaunch(gvm.ScriptLaunch) error {
 	r.close = true
 	return nil
 }

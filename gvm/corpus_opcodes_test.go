@@ -66,6 +66,23 @@ func TestIndexedAddImmediateAndStoreTop(t *testing.T) {
 	}
 }
 
+func TestFirstIndexedStoreTopAndSign(t *testing.T) {
+	vm := symbolCopyFixture(t, []byte{0x05, 9, 0x49, 0, 3, 0xff}) // destination[symbol3[0]=3] = 9, keep 9
+	if err := vm.Run(10); err != nil || !vm.Halted() {
+		t.Fatal(err)
+	}
+	destination, _ := vm.Symbol(0)
+	if want := words(0, 0, 0, 9); !reflect.DeepEqual(destination, want) || !reflect.DeepEqual(vm.Stack(), []uint16{9}) {
+		t.Fatalf("destination = %x stack = %v", destination, vm.Stack())
+	}
+	for _, tc := range []struct{ in, want uint16 }{{5, 1}, {0, 0}, {0xfffb, 0xffff}, {0x8000, 0xffff}, {0x7fff, 1}} {
+		vm := runToHalt(t, append(push(tc.in), 0xa4), gvm.AddressSpace{}, nil)
+		if !reflect.DeepEqual(vm.Stack(), []uint16{tc.want}) {
+			t.Fatalf("sign(%#x) = %v, want %#x", tc.in, vm.Stack(), tc.want)
+		}
+	}
+}
+
 func TestDecimalIntoMediaUsesNativeResize(t *testing.T) {
 	config := &gvm.ServiceConfig{Media: []gvm.MediaResource{{Data: []byte{}}}}
 	// "-123" plus NUL is five bytes; the native allocator rounds growth to six.
@@ -103,13 +120,52 @@ func TestStringFormatOpcodes(t *testing.T) {
 	}
 	config := &gvm.ServiceConfig{Media: []gvm.MediaResource{{Data: []byte{}}, {Data: []byte("%d.%d.%d.%d-%d\x00")}}}
 	vm := runToHalt(t, append(push(0, 1, 1, 2, 3, 4, 0xfffb), 0x8e), gvm.AddressSpace{}, config)
-	if record := mediaRecord(t, vm, 0); string(record) != "1.2.3.4--5\x00" {
+	if record := mediaRecord(t, vm, 0); string(record) != "1.2.3.4--5\x00\x00" {
 		t.Fatalf("8e media = %q", record)
 	}
 	config = &gvm.ServiceConfig{Media: []gvm.MediaResource{{Data: []byte{}}, {Data: []byte("%d:%d:%d:%d\x00")}}}
 	vm = runToHalt(t, append(push(0, 1, 7, 8, 9, 10), 0x8d), gvm.AddressSpace{}, config)
 	if record := mediaRecord(t, vm, 0); string(record[:9]) != "7:8:9:10\x00" || len(vm.Stack()) != 0 {
 		t.Fatalf("8d media = %q stack=%v", record, vm.Stack())
+	}
+}
+
+// Opcodes 8a..8e use the GVM2X integer formatter (sub_41a500): d, x, X and c
+// with the ' ', '#', '+', '-' and '0' flags, a width and a precision. Any other
+// conversion character is copied literally, and output stops at 255 bytes.
+func TestNumberFormatterMatchesNative(t *testing.T) {
+	for _, tc := range []struct {
+		format string
+		values []uint16
+		want   string
+	}{
+		{"%d|%5d|%-5d|%05d", []uint16{0xfff9, 42, 42, 0xfff9}, "-7|   42|42   |-0007"},
+		{"%+d % d %+d", []uint16{3, 3, 0xfffd}, "+3  3 -3"},
+		{"%x %X %#x %#X %#x", []uint16{255, 255, 255, 0x0aBc, 0}, "ff FF 0xff 0XABC 0"},
+		{"%x", []uint16{0xffff}, "ffffffff"},
+		{"%.3d|%.0d|%3.2d", []uint16{7, 0, 5}, "007|| 05"},
+		{"%c%c%3c", []uint16{'O', 'K', '!'}, "OK  !"},
+		{"%s %5b %% %d", []uint16{9}, "s b % 9"},
+		{"%d %d", []uint16{1}, "1 0"},
+	} {
+		t.Run(tc.format, func(t *testing.T) {
+			op := byte(0x89 + len(tc.values))
+			config := &gvm.ServiceConfig{Media: []gvm.MediaResource{{Data: []byte{}}, {Data: append([]byte(tc.format), 0)}}}
+			vm := runToHalt(t, append(push(append([]uint16{0, 1}, tc.values...)...), op), gvm.AddressSpace{}, config)
+			record := mediaRecord(t, vm, 0)
+			if got := string(record[:min(len(record), len(tc.want)+1)]); got != tc.want+"\x00" || len(vm.Stack()) != 0 {
+				t.Fatalf("formatted = %q (record %q), want %q", got, record, tc.want)
+			}
+		})
+	}
+	long := make([]byte, 300)
+	for i := range long {
+		long[i] = 'a'
+	}
+	config := &gvm.ServiceConfig{Media: []gvm.MediaResource{{Data: []byte{}}, {Data: append(long, 0)}}}
+	vm := runToHalt(t, append(push(0, 1, 1), 0x8a), gvm.AddressSpace{}, config)
+	if record := mediaRecord(t, vm, 0); len(record) < 256 || record[254] != 'a' || record[255] != 0 {
+		t.Fatalf("long output = %d bytes, want 255 characters and a NUL", len(record))
 	}
 }
 
@@ -192,8 +248,36 @@ func TestSelectionArithmetic(t *testing.T) {
 }
 
 type hostRequests struct {
-	browser []string
-	exits   int
+	browser  []string
+	exits    int
+	launches []gvm.ScriptLaunch
+}
+
+func (h *hostRequests) RequestGVMLaunch(launch gvm.ScriptLaunch) error {
+	h.launches = append(h.launches, launch)
+	return nil
+}
+
+// Opcode c3 hands the host another script to run, named by the (provider,
+// script) pair the host looks stored scripts up by, and ends this dispatch.
+func TestScriptLaunchEndsTheDispatch(t *testing.T) {
+	host := &hostRequests{}
+	config := &gvm.ServiceConfig{
+		Media:       []gvm.MediaResource{{Data: []byte("NEXT\x00")}, {Data: []byte("arg\x00\x00")}},
+		HostRequest: host,
+	}
+	// Stack: keep, provider, script, name media, word, data media, word.
+	vm, err := gvm.NewWithAddressSpaceAndServices(append(push(7, 3407, 41031, 0, 0xfffe, 1, 9), 0xc3, 0x05, 1), 0, gvm.AddressSpace{}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.Run(20); err != nil || !vm.Halted() || !reflect.DeepEqual(vm.Stack(), []uint16{7}) {
+		t.Fatalf("c3: err=%v halted=%v stack=%v", err, vm.Halted(), vm.Stack())
+	}
+	want := []gvm.ScriptLaunch{{ID: [2]uint16{3407, 41031}, Strings: [2]string{"NEXT", "arg"}, Words: [2]int16{-2, 9}}}
+	if !reflect.DeepEqual(host.launches, want) {
+		t.Fatalf("launches = %+v, want %+v", host.launches, want)
+	}
 }
 
 func (h *hostRequests) RequestGVMBrowser(url string) error {
