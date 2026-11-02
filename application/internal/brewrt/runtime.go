@@ -438,12 +438,15 @@ func (r *Runtime) screenBytes() uint32 {
 
 func (r *Runtime) mapImage(module []byte) error {
 	imageBase := moduleBase - 8
-	// Original BREW handsets expose low physical memory without an MMU. Some
-	// commercial modules make harmless reads through a null-derived pointer
-	// and expect zero-filled memory rather than a host access violation. Keep
-	// the range non-writable and non-executable so corrupt stores and branches
-	// still fail at the execution boundary.
-	if err := r.cpu.Map(0, imageBase, cpu.PermissionRead); err != nil {
+	// Original BREW handsets expose low physical memory without an MMU, so
+	// neither a load nor a store through a null-derived pointer aborts there.
+	// Some commercial modules make harmless reads through such a pointer and
+	// expect zero-filled memory. Others make harmless stores: one title
+	// registers its ISoundPlayer callback with a NULL user pointer, and the
+	// callback clears the byte at pUser+12 each time a clip finishes. Keep the
+	// range non-executable so a branch through a null pointer still fails at
+	// the execution boundary.
+	if err := r.cpu.Map(0, imageBase, cpu.PermissionRead|cpu.PermissionWrite); err != nil {
 		return fmt.Errorf("map BREW low memory: %w", err)
 	}
 	imageData := make([]byte, len(module)+8+int(moduleBSSSlack))

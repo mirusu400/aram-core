@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/binary"
+	"errors"
 	"image"
 	"image/color"
 	"strings"
@@ -139,7 +140,7 @@ func TestRuntimeMapsModuleAtBREWLinkTimeDataAddresses(t *testing.T) {
 	}
 }
 
-func TestRuntimeMapsLowMemoryReadOnly(t *testing.T) {
+func TestRuntimeMapsLowMemoryWithoutExecute(t *testing.T) {
 	runtime := newSyntheticRuntime(t)
 	var low [16]byte
 	if err := runtime.cpu.ReadMemory(0, low[:]); err != nil {
@@ -148,8 +149,18 @@ func TestRuntimeMapsLowMemoryReadOnly(t *testing.T) {
 	if low != [16]byte{} {
 		t.Fatalf("low BREW memory = %x, want zeroes", low)
 	}
-	if err := runtime.cpu.WriteMemory(0, []byte{1}); err == nil {
-		t.Fatal("write to read-only low BREW memory succeeded")
+	if err := runtime.cpu.WriteMemory(12, []byte{0}); err != nil {
+		t.Fatalf("store through a null-derived pointer: %v", err)
+	}
+	for register, value := range map[uint32]uint32{
+		cpu.RegisterSP: stackEntrySP, cpu.RegisterLR: returnTrap | 1,
+	} {
+		if err := runtime.cpu.WriteRegister(register, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.runAppletCode(context.Background(), 0, cpu.ModeARM, "null branch"); !errors.Is(err, cpu.ErrPermissionDenied) {
+		t.Fatalf("branch through a null pointer err=%v, want %v", err, cpu.ErrPermissionDenied)
 	}
 }
 

@@ -170,3 +170,35 @@ func TestSoundPlayerReportsUndecodablePlaybackAsFailure(t *testing.T) {
 	}
 	checkSoundNotification(t, r, 1, 15) // AEE_SOUNDPLAYER_FAILURE, not SUCCESS.
 }
+
+func TestSoundPlayerCompletionMayStoreThroughNullUserPointer(t *testing.T) {
+	r := soundNotifyRuntime(t)
+	// A commercial title registers with a NULL user pointer, and its callback
+	// clears pUser->playing on DONE. The store lands in low handset memory.
+	var encoded [16]byte
+	for i, word := range []uint32{
+		0xe352000e, // cmp r2, #14
+		0x03a01000, // moveq r1, #0
+		0x05c0100c, // strbeq r1, [r0, #12]
+		0xe12fff1e, // bx lr
+	} {
+		binary.LittleEndian.PutUint32(encoded[i*4:], word)
+	}
+	if err := r.cpu.WriteMemory(moduleBase+32, encoded[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.cpu.WriteMemory(12, []byte{0xff}); err != nil {
+		t.Fatal(err)
+	}
+	invokeSoundPlayerMethod(t, r, 2, moduleBase+32, 0)
+	invokeSoundPlayerMethod(t, r, 4, 0, 0)
+	for _, elapsed := range []time.Duration{0, 100 * time.Millisecond} {
+		if err := r.RunCallbacks(context.Background(), elapsed); err != nil {
+			t.Fatalf("sound callback with a NULL user pointer: %v", err)
+		}
+	}
+	var flag [1]byte
+	if err := r.cpu.ReadMemory(12, flag[:]); err != nil || flag[0] != 0 {
+		t.Fatalf("DONE store through NULL+12 = %x err=%v, want 00", flag, err)
+	}
+}
