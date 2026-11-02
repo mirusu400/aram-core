@@ -1671,25 +1671,24 @@ func (v *VM) Step() error {
 		if v.depth == 0 {
 			return fail(ErrStackUnderflow)
 		}
-		fixed, ok := v.services.timer.(FixedTimerRequestSink)
-		if !ok {
-			return fail(ErrTimerUnavailable)
-		}
-		if err := fixed.RequestGVMFixedTimer(int16(v.stack[v.depth-1])); err != nil {
-			return fail(err)
+		// GVM2X sub_41AF30: vibrate for the popped number of seconds. It is
+		// a host effect only, never a guest timer (see VibrationSink).
+		if sink := v.services.vibration; sink != nil {
+			if err := sink.RequestGVMVibration(int16(v.stack[v.depth-1])); err != nil {
+				return fail(err)
+			}
 		}
 		v.depth--
 		v.stack[v.depth] = 0
 	case 0x95:
-		// GVM2X cancels its fixed host timer (ID 0x1003). This opcode
-		// has no operands or stack effect. A host that tracks timer requests
-		// may discard the pending request here.
+		// GVM2X kills the vibration timer (ID 0x1003). No operands or stack
+		// effect, and the guest timer slots keep running.
 		if v.services == nil {
 			v.fault = &UnsupportedOpcodeError{Opcode: op, Offset: offset}
 			return v.fault
 		}
-		if timer, ok := v.services.timer.(interface{ CancelGVMTimer() error }); ok {
-			if err := timer.CancelGVMTimer(); err != nil {
+		if sink := v.services.vibration; sink != nil {
+			if err := sink.CancelGVMVibration(); err != nil {
 				return fail(err)
 			}
 		}

@@ -75,6 +75,7 @@ func newOperationalFixture(t *testing.T, data []byte) *gvmMachine {
 		operational: true,
 		width:       operationalGVMWidth,
 		height:      operationalGVMHeight,
+		endEntry:    uint32(binary.LittleEndian.Uint16(pkg.SGS[0x1e:0x20])),
 		eventEntry:  uint32(binary.LittleEndian.Uint16(pkg.SGS[0x20:0x22])),
 		inputEntry:  uint32(binary.LittleEndian.Uint16(pkg.SGS[0x22:0x24])),
 	}

@@ -2,14 +2,18 @@ package gvmhost
 
 import "github.com/mirusu400/aram-core/profile"
 
-// SKTGuestCode maps the authenticated five-way pad, first soft key and numeric
-// keypad paths to the selected GVM guest codes. Titles treat code 13 as CLR, so
-// the clear key shares it with the first soft key. Codes 14 and 15 have
-// distinct stateful dispatch routes (15 ends the script) and remain excluded.
+// SKTGuestCode maps the authenticated five-way pad, first soft key, SEND and
+// numeric keypad paths to the selected GVM guest codes. Titles treat code 13
+// as CLR, so the clear key shares it with the first soft key, and ask for the
+// SEND key where code 14 opens their WAP pages. Code 15 (END) never reaches
+// the input entry: GVM2X runs the script's end entry and closes it instead,
+// which the machine owns.
 func SKTGuestCode(key profile.KeyCode) (uint16, bool) {
 	switch key {
 	case profile.KeySoft1, profile.KeyClear:
 		return 13, true
+	case profile.KeySend:
+		return 14, true
 	case profile.KeyUp:
 		return 16, true
 	case profile.KeyDown:

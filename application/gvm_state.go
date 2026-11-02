@@ -21,8 +21,11 @@ import (
 )
 
 const (
-	gvmMachineStateMagic    = "ARAMGVM\x00"
-	gvmMachineStateVersion  = uint32(1)
+	gvmMachineStateMagic = "ARAMGVM\x00"
+	// Version 2 dropped the fixed-timer flag (opcode94 is vibration) and
+	// added the palette blink phase. Version 1 states still load.
+	gvmMachineStateVersion  = uint32(2)
+	gvmMachineStateVersion1 = uint32(1)
 	maxGVMMachineStateBytes = shared.MaxServicesStateBytes
 )
 
@@ -38,7 +41,6 @@ type gvmTimerState struct {
 	Interval int16
 	Selector uint16
 	Reached  bool
-	Fixed    bool
 	Frame    uint64
 	Slots    [3]gvmTimerSlotState
 }
@@ -46,7 +48,7 @@ type gvmTimerState struct {
 func (s *gvmTimerBoundary) snapshotState() gvmTimerState {
 	state := gvmTimerState{
 		Mode: s.mode, Interval: s.interval, Selector: s.selector,
-		Reached: s.reached, Fixed: s.fixed, Frame: s.frame,
+		Reached: s.reached, Frame: s.frame,
 	}
 	for index, slot := range s.slots {
 		state.Slots[index] = gvmTimerSlotState{
@@ -67,7 +69,7 @@ func (s *gvmTimerBoundary) restoreState(state gvmTimerState) error {
 		}
 	}
 	s.mode, s.interval, s.selector = state.Mode, state.Interval, state.Selector
-	s.reached, s.fixed, s.frame = state.Reached, state.Fixed, state.Frame
+	s.reached, s.frame = state.Reached, state.Frame
 	for index, slot := range state.Slots {
 		s.slots[index] = gvmTimerSlot{
 			interval: slot.Interval, selector: slot.Selector,
@@ -368,8 +370,11 @@ func (m *gvmMachine) parseGVMState(data []byte) (gvmVolatileState, error) {
 		return gvmVolatileState{}, fmt.Errorf("load GVM state: magic mismatch")
 	}
 	var scalar [8]byte
-	if _, err := io.ReadFull(reader, scalar[:4]); err != nil ||
-		binary.LittleEndian.Uint32(scalar[:4]) != gvmMachineStateVersion {
+	if _, err := io.ReadFull(reader, scalar[:4]); err != nil {
+		return gvmVolatileState{}, fmt.Errorf("load GVM state: unsupported version")
+	}
+	version := binary.LittleEndian.Uint32(scalar[:4])
+	if version != gvmMachineStateVersion && version != gvmMachineStateVersion1 {
 		return gvmVolatileState{}, fmt.Errorf("load GVM state: unsupported version")
 	}
 	sourceDigest := make([]byte, sha256.Size)
@@ -392,7 +397,13 @@ func (m *gvmMachine) parseGVMState(data []byte) (gvmVolatileState, error) {
 		return gvmVolatileState{}, fmt.Errorf("load GVM state: truncated payload")
 	}
 	var state gvmVolatileState
-	if err := shared.UnmarshalStateComponent(payload, &state); err != nil {
+	if version == gvmMachineStateVersion1 {
+		var legacy gvmVolatileStateV1
+		if err := shared.UnmarshalStateComponent(payload, &legacy); err != nil {
+			return gvmVolatileState{}, fmt.Errorf("decode GVM state: %w", err)
+		}
+		state = legacy.upgrade()
+	} else if err := shared.UnmarshalStateComponent(payload, &state); err != nil {
 		return gvmVolatileState{}, fmt.Errorf("decode GVM state: %w", err)
 	}
 	switch state.Lifecycle {
@@ -410,14 +421,63 @@ func (m *gvmMachine) newGVMStateCandidateLocked() (*gvmMachine, error) {
 	candidate := &gvmMachine{
 		state: machinecore.StateReady, source: m.source,
 		packageSGS: bytes.Clone(m.packageSGS), budget: m.budget,
-		operational: true, eventEntry: m.eventEntry, inputEntry: m.inputEntry,
+		operational: true, endEntry: m.endEntry,
+		eventEntry: m.eventEntry, inputEntry: m.inputEntry,
 		persistent: m.persistent,
 		width:      m.width, height: m.height,
-		timerDrivenEvents: m.timerDrivenEvents,
-		northMediaSuffix:  m.northMediaSuffix, nomMediaTail: m.nomMediaTail,
+		northMediaSuffix: m.northMediaSuffix, nomMediaTail: m.nomMediaTail,
 	}
 	if err := candidate.resetVMLocked(); err != nil {
 		return nil, fmt.Errorf("initialize GVM state candidate: %w", err)
 	}
 	return candidate, nil
+}
+
+// gvmVolatileStateV1 is the version 1 layout. Its fixed-timer flag recorded
+// opcode94, which is vibration and never fed the guest timers, so upgrading
+// drops it; the palette starts at the steady phase.
+type gvmVolatileStateV1 struct {
+	Lifecycle machinecore.State
+	VM        gvm.State
+	Clock     shared.ClockState
+	Random    shared.RandomState
+	Timer     struct {
+		Mode     uint8
+		Interval int16
+		Selector uint16
+		Reached  bool
+		Fixed    bool
+		Frame    uint64
+		Slots    [3]gvmTimerSlotState
+	}
+	Display struct {
+		Width     uint32
+		Height    uint32
+		Drawing   []byte
+		Auxiliary []byte
+		Mapping   uint8
+		Selector  uint8
+	}
+	Media           gvmDecodedMediaState
+	Frame           gvmFrameState
+	AudioGeneration uint64
+	InputDispatches uint64
+	LastInputCode   uint16
+}
+
+func (s gvmVolatileStateV1) upgrade() gvmVolatileState {
+	return gvmVolatileState{
+		Lifecycle: s.Lifecycle, VM: s.VM, Clock: s.Clock, Random: s.Random,
+		Timer: gvmTimerState{
+			Mode: s.Timer.Mode, Interval: s.Timer.Interval, Selector: s.Timer.Selector,
+			Reached: s.Timer.Reached, Frame: s.Timer.Frame, Slots: s.Timer.Slots,
+		},
+		Display: gvmhost.DisplayState{
+			Width: s.Display.Width, Height: s.Display.Height,
+			Drawing: s.Display.Drawing, Auxiliary: s.Display.Auxiliary,
+			Mapping: s.Display.Mapping, Selector: s.Display.Selector,
+		},
+		Media: s.Media, Frame: s.Frame, AudioGeneration: s.AudioGeneration,
+		InputDispatches: s.InputDispatches, LastInputCode: s.LastInputCode,
+	}
 }

@@ -31,6 +31,16 @@ type PaletteMapper interface {
 	Color(index byte) color.RGBA
 }
 
+// PhasedPaletteMapper is a PaletteMapper with blink phases. Phase 0 must map
+// exactly like Map.
+type PhasedPaletteMapper interface {
+	PaletteMapper
+	MapPhase(mapping, phase uint8, selector int16) (byte, error)
+}
+
+// maxGVMPalettePhase is the last of GVM2X's six blink phases.
+const maxGVMPalettePhase = 5
+
 // FramePublisher receives one immutable image for each successful guest
 // presentation. Implementations must not call back into DisplayAdapter.
 type FramePublisher interface {
@@ -60,6 +70,7 @@ type DisplayAdapter struct {
 	palette     PaletteMapper
 	publisher   FramePublisher
 	mapping     uint8
+	phase       uint8
 	selector    uint8
 	activeColor byte
 	originX     int
@@ -109,7 +120,7 @@ func (d *DisplayAdapter) ZeroGVMDisplay() error {
 func (d *DisplayAdapter) FillGVMDisplay(selector int16) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	mapped, err := d.palette.Map(d.mapping, selector)
+	mapped, err := d.mapColor(d.mapping, d.phase, selector)
 	if err != nil {
 		return err
 	}
@@ -135,7 +146,7 @@ func (d *DisplayAdapter) CopyGVMDisplay(source, destination gvm.DisplayBuffer) e
 func (d *DisplayAdapter) SelectGVMMapping(selector uint8) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	mapped, err := d.palette.Map(selector, int16(d.selector))
+	mapped, err := d.mapColor(selector, d.phase, int16(d.selector))
 	if err != nil {
 		return err
 	}
@@ -146,12 +157,41 @@ func (d *DisplayAdapter) SelectGVMMapping(selector uint8) error {
 func (d *DisplayAdapter) SelectGVMColor(selector uint8) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	mapped, err := d.palette.Map(d.mapping, int16(selector))
+	mapped, err := d.mapColor(d.mapping, d.phase, int16(selector))
 	if err != nil {
 		return err
 	}
 	d.selector, d.activeColor = selector, mapped
 	return nil
+}
+
+// SetGVMPalettePhase selects one of the six blink phases, as GVM2X's slot-0
+// timer does with its frame counter modulo six (sub_40ED50). Later drawing
+// and the current drawing color use the new phase; pixels already drawn keep
+// their packed values. Phases outside 0..5 are rejected without a change.
+func (d *DisplayAdapter) SetGVMPalettePhase(phase uint8) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if phase > maxGVMPalettePhase {
+		return fmt.Errorf("%w: palette phase %d", ErrInvalidDisplayConfig, phase)
+	}
+	mapped, err := d.mapColor(d.mapping, phase, int16(d.selector))
+	if err != nil {
+		return err
+	}
+	d.phase, d.activeColor = phase, mapped
+	return nil
+}
+
+// mapColor maps through the blink phase when the palette has phases. Phase 0
+// is the steady row every PaletteMapper provides.
+func (d *DisplayAdapter) mapColor(mapping, phase uint8, selector int16) (byte, error) {
+	if phase != 0 {
+		if phased, ok := d.palette.(PhasedPaletteMapper); ok {
+			return phased.MapPhase(mapping, phase, selector)
+		}
+	}
+	return d.palette.Map(mapping, selector)
 }
 
 func (d *DisplayAdapter) FillGVMRectangle(x1, y1, x2, y2 int16) error {
@@ -237,7 +277,7 @@ func (d *DisplayAdapter) DrawGVMPoint(x, y, selector int16) error {
 	if selector == 4 {
 		return nil
 	}
-	mapped, err := d.palette.Map(d.mapping, selector)
+	mapped, err := d.mapColor(d.mapping, d.phase, selector)
 	if err != nil {
 		return err
 	}
@@ -585,7 +625,7 @@ func (d *DisplayAdapter) DrawGVMText(resource []byte, x, y int16, style gvm.Text
 		})
 		cursor += cellWidth
 	}
-	colorIndex, err := d.palette.Map(d.mapping, int16(style.Primary))
+	colorIndex, err := d.mapColor(d.mapping, d.phase, int16(style.Primary))
 	if err != nil {
 		return err
 	}
@@ -734,7 +774,7 @@ func (d *DisplayAdapter) mapSprite(sprite indexedSprite) ([]byte, error) {
 				continue
 			}
 		}
-		value, err := d.palette.Map(d.mapping, int16(selector))
+		value, err := d.mapColor(d.mapping, d.phase, int16(selector))
 		if err != nil {
 			return nil, err
 		}

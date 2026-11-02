@@ -21,6 +21,7 @@ import (
 	"github.com/mirusu400/aram-core/gvm"
 	"github.com/mirusu400/aram-core/loader"
 	"github.com/mirusu400/aram-core/loader/gnex"
+	"github.com/mirusu400/aram-core/profile"
 	shared "github.com/mirusu400/aram-core/runtime"
 )
 
@@ -63,23 +64,13 @@ const (
 )
 
 type gvmOperationalConfig struct {
-	width  int32
-	height int32
-	// timerDrivenEvents dispatches the event entry only when a timer slot is
-	// due. Without it the event entry runs every frame, which titles that drive
-	// themselves from the fixed timer (94) still need.
-	timerDrivenEvents bool
-	northMediaSuffix  bool
-	nomMediaTail      bool
+	width            int32
+	height           int32
+	northMediaSuffix bool
+	nomMediaTail     bool
 }
 
 var operationalGVM = gvmOperationalConfig{width: operationalGVMWidth, height: operationalGVMHeight}
-
-func timerDrivenGVM() gvmOperationalConfig {
-	config := operationalGVM
-	config.timerDrivenEvents = true
-	return config
-}
 
 func gvmWith(update func(*gvmOperationalConfig)) gvmOperationalConfig {
 	config := operationalGVM
@@ -94,21 +85,21 @@ var gvmOperationalCorpora = map[string]gvmOperationalConfig{
 	GVMNomOperationalSHA256:           gvmWith(func(c *gvmOperationalConfig) { c.nomMediaTail = true }),
 	GVMFruitOperationalSHA256:         operationalGVM,
 	GVMMashiOperationalSHA256:         operationalGVM,
-	GVMFantasyOperationalSHA256:       timerDrivenGVM(),
-	GVMStripOperationalSHA256:         timerDrivenGVM(),
+	GVMFantasyOperationalSHA256:       operationalGVM,
+	GVMStripOperationalSHA256:         operationalGVM,
 	GVMNorthOperationalSHA256:         gvmWith(func(c *gvmOperationalConfig) { c.northMediaSuffix = true }),
 	GVMNomAlternateSHA256:             gvmWith(func(c *gvmOperationalConfig) { c.nomMediaTail = true }),
 	GVMFruitAlternateSHA256:           operationalGVM,
-	GVMFantasyAlternateSHA256:         timerDrivenGVM(),
+	GVMFantasyAlternateSHA256:         operationalGVM,
 	GVMNorthAlternateSHA256:           gvmWith(func(c *gvmOperationalConfig) { c.northMediaSuffix = true }),
-	GVMKangHoDongOperationalSHA256:    timerDrivenGVM(),
+	GVMKangHoDongOperationalSHA256:    operationalGVM,
 	GVMCleanTimeOperationalSHA256:     operationalGVM,
 	GVMSwordMasterOperationalSHA256:   operationalGVM,
 	GVMCrowOperationalSHA256:          operationalGVM,
 	GVMHeroLegendOperationalSHA256:    operationalGVM,
-	GVMFightOinyongOperationalSHA256:  timerDrivenGVM(),
-	GVMFightOinyong2OperationalSHA256: timerDrivenGVM(),
-	GVMShiningStoneOperationalSHA256:  timerDrivenGVM(),
+	GVMFightOinyongOperationalSHA256:  operationalGVM,
+	GVMFightOinyong2OperationalSHA256: operationalGVM,
+	GVMShiningStoneOperationalSHA256:  operationalGVM,
 }
 
 var (
@@ -117,27 +108,18 @@ var (
 	errGVMTimerBoundary    = errors.New("application: GVM timer delivery boundary")
 )
 
+// gvmTimerBoundary models GVM2X's three guest timer slots (host timer IDs
+// 0x1000..0x1002). Natively they are the only source of event-entry
+// dispatches: each WM_TIMER publishes its slot in symbol 0 and runs the
+// event entry (sub_41E450).
 type gvmTimerBoundary struct {
 	mode     uint8
 	interval int16
 	selector uint16
 	reached  bool
 	terminal bool
-	fixed    bool
 	frame    uint64
 	slots    [3]gvmTimerSlot
-}
-
-func (s *gvmTimerBoundary) RequestGVMFixedTimer(interval int16) error {
-	s.fixed = true
-	s.interval, s.selector = interval, 1
-	s.reached = true
-	if s.terminal {
-		return errGVMTimerBoundary
-	}
-	// The native fixed timer uses a separate host timer and counter. Its
-	// callback timing is not inferred from the guest argument here.
-	return nil
 }
 
 type gvmTimerSlot struct {
@@ -174,13 +156,6 @@ func (s *gvmTimerBoundary) RequestGVMTimerMode(mode uint8, interval int16, selec
 	return nil
 }
 
-func (s *gvmTimerBoundary) CancelGVMTimer() error {
-	s.slots[0] = gvmTimerSlot{}
-	s.fixed = false
-	s.mode, s.interval, s.selector, s.reached = 0, 0, 0, false
-	return nil
-}
-
 func (s *gvmTimerBoundary) CancelGVMTimerMode(mode uint8) error {
 	if mode < uint8(len(s.slots)) {
 		s.slots[mode] = gvmTimerSlot{}
@@ -191,27 +166,32 @@ func (s *gvmTimerBoundary) CancelGVMTimerMode(mode uint8) error {
 	return nil
 }
 
-// advanceFrame delivers at most one due native timer slot per emulated 60 Hz
-// frame. A zero selector makes a slot one-shot; other selectors repeat.
-func (s *gvmTimerBoundary) advanceFrame() (uint8, bool) {
-	s.frame++
-	now := s.frame * 1000
-	for mode := range s.slots {
-		slot := &s.slots[mode]
-		if !slot.active || now < slot.nextTick {
-			continue
-		}
-		if slot.selector == 0 {
-			slot.active = false
-		} else {
-			period := uint64(slot.interval) * 60
-			for slot.nextTick <= now {
-				slot.nextTick += period
-			}
-		}
-		return uint8(mode), true
+// advanceFrame moves the timer clock by one emulated 60 Hz frame.
+func (s *gvmTimerBoundary) advanceFrame() { s.frame++ }
+
+// takeDue reports whether a slot fires in the current frame and schedules its
+// next tick. Like coalesced WM_TIMER messages, a slot fires at most once per
+// frame. A zero selector makes the slot one-shot; other selectors repeat.
+// Callers ask slot by slot so a dispatch that cancels or re-arms a later slot
+// takes effect within the same frame.
+func (s *gvmTimerBoundary) takeDue(mode uint8) bool {
+	if int(mode) >= len(s.slots) {
+		return false
 	}
-	return 0, false
+	slot := &s.slots[mode]
+	now := s.frame * 1000
+	if !slot.active || now < slot.nextTick {
+		return false
+	}
+	if slot.selector == 0 {
+		slot.active = false
+	} else {
+		period := uint64(slot.interval) * 60
+		for slot.nextTick <= now {
+			slot.nextTick += period
+		}
+	}
+	return true
 }
 
 type gvmFramePublisher struct {
@@ -385,6 +365,7 @@ type gvmMachine struct {
 	budget                 uint64
 	lastResult             cpu.Result
 	operational            bool
+	endEntry               uint32
 	eventEntry             uint32
 	inputEntry             uint32
 	frames                 *gvmFramePublisher
@@ -400,7 +381,7 @@ type gvmMachine struct {
 	inputDispatches        uint64
 	lastInputCode          uint16
 	lastInputResult        cpu.Result
-	timerDrivenEvents      bool
+	reservedSymbols        bool
 	northMediaSuffix       bool
 	nomMediaTail           bool
 	audioGeneration        uint64
@@ -469,22 +450,22 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 		}
 	}
 	machine := &gvmMachine{
-		state:             machinecore.StateReady,
-		source:            source,
-		packageSGS:        bytes.Clone(pkg.SGS),
-		budget:            budget,
-		operational:       operational,
-		width:             config.width,
-		height:            config.height,
-		timerDrivenEvents: config.timerDrivenEvents,
-		northMediaSuffix:  config.northMediaSuffix,
-		nomMediaTail:      config.nomMediaTail,
+		state:            machinecore.StateReady,
+		source:           source,
+		packageSGS:       bytes.Clone(pkg.SGS),
+		budget:           budget,
+		operational:      operational,
+		width:            config.width,
+		height:           config.height,
+		northMediaSuffix: config.northMediaSuffix,
+		nomMediaTail:     config.nomMediaTail,
 	}
 	if operational {
 		headerOffset := pkg.Header.PrefixOffset
 		if headerOffset < 0 || len(pkg.SGS)-headerOffset < 0x24 {
 			return nil, true, fmt.Errorf("initialize operational GVM: SGS event entries at 0x20 and 0x22 are unavailable")
 		}
+		machine.endEntry = uint32(binary.LittleEndian.Uint16(pkg.SGS[headerOffset+0x1e : headerOffset+0x20]))
 		machine.eventEntry = uint32(binary.LittleEndian.Uint16(pkg.SGS[headerOffset+0x20 : headerOffset+0x22]))
 		machine.inputEntry = uint32(binary.LittleEndian.Uint16(pkg.SGS[headerOffset+0x22 : headerOffset+0x24]))
 	}
@@ -522,7 +503,8 @@ func (m *gvmMachine) resetVMLocked() error {
 	if err != nil {
 		return fmt.Errorf("decode GVM execution image: %w", err)
 	}
-	if m.operational && len(image.Symbols) >= 16 {
+	m.reservedSymbols = m.operational && len(image.Symbols) >= 16
+	if m.reservedSymbols {
 		// The native loader (sub_41dfd0) seeds the reserved symbols, including
 		// the LCD width and height titles lay their screens out from. Left at
 		// zero, titles centre on the origin and divide by the screen size.
@@ -530,6 +512,9 @@ func (m *gvmMachine) resetVMLocked() error {
 		if err != nil {
 			return fmt.Errorf("seed GVM reserved symbols: %w", err)
 		}
+		// The native start state (sub_4148F0) then publishes 1 in symbol 0
+		// before it runs the entry.
+		binary.LittleEndian.PutUint16(image.Symbols[0].Data, 1)
 	}
 	clock := new(shared.Clock)
 	if err := clock.Restore(shared.ClockState{WallEpochMillis: 0, TimezoneOffsetMins: 540, Locale: "ko-KR"}); err != nil {
@@ -695,22 +680,18 @@ func (m *gvmMachine) Start(ctx context.Context) error {
 		return fmt.Errorf("start from %s: %w", m.state, ErrInvalidState)
 	}
 	if m.operational {
-		return m.runOperationalLocked(ctx, false, -1)
+		return m.runOperationalLocked(ctx, -1)
 	}
 	return m.runLocked(ctx)
 }
 
-func (m *gvmMachine) runOperationalLocked(ctx context.Context, dispatchEvent bool, timerMode int) error {
+// runOperationalLocked continues the current dispatch, or with a timer slot
+// of 0..2 first starts the event entry for that slot.
+func (m *gvmMachine) runOperationalLocked(ctx context.Context, timerSlot int) error {
 	m.state = machinecore.StateRunning
-	if dispatchEvent && m.vm.Halted() {
-		var started bool
-		var err error
-		if timerMode >= 0 {
-			// The native timer wrapper publishes the timer slot in symbol 0.
-			started, err = m.vm.BeginSymbolDispatch(0, uint16(timerMode), m.eventEntry)
-		} else {
-			started, err = m.vm.BeginDispatch(m.eventEntry)
-		}
+	if timerSlot >= 0 && m.vm.Halted() {
+		// The native timer wrapper publishes the timer slot in symbol 0.
+		started, err := m.vm.BeginSymbolDispatch(0, uint16(timerSlot), m.eventEntry)
 		if err != nil {
 			m.state = machinecore.StateFaulted
 			return fmt.Errorf("begin operational GVM event dispatch at offset %d: %w", m.eventEntry, err)
@@ -856,19 +837,21 @@ func (m *gvmMachine) StepFrame(ctx context.Context) error {
 		if m.state != machinecore.StateRunning {
 			return fmt.Errorf("step frame from %s: %w", m.state, ErrInvalidState)
 		}
-		if m.timerDrivenEvents {
-			mode, due := m.timer.advanceFrame()
-			if due {
-				if err := m.runOperationalLocked(ctx, true, int(mode)); err != nil {
-					return err
-				}
+		m.timer.advanceFrame()
+		for slot := range uint8(len(m.timer.slots)) {
+			if !m.timer.takeDue(slot) {
+				continue
 			}
-		} else if err := m.runOperationalLocked(ctx, true, -1); err != nil {
-			return err
-		}
-		if m.state != machinecore.StateRunning {
-			// The dispatch asked the handset to exit or open the browser.
-			return nil
+			if err := m.prepareGVMTimerTickLocked(slot); err != nil {
+				return err
+			}
+			if err := m.runOperationalLocked(ctx, int(slot)); err != nil {
+				return err
+			}
+			if m.state != machinecore.StateRunning {
+				// The dispatch asked the handset to exit or open the browser.
+				return nil
+			}
 		}
 		return m.advanceGVMAudioLocked(time.Second / 60)
 	}
@@ -876,6 +859,46 @@ func (m *gvmMachine) StepFrame(ctx context.Context) error {
 		return fmt.Errorf("step frame from %s: %w", m.state, ErrInvalidState)
 	}
 	return m.runLocked(ctx)
+}
+
+// prepareGVMTimerTickLocked applies what GVM2X's timer wrapper (sub_41E450)
+// does before the event entry. Slot 0 advances the frame counter in symbol 3
+// modulo 5040 and its remainders by 2, 3 and 6 in symbols 4..6. Every slot
+// then selects the palette blink phase from symbol 6.
+func (m *gvmMachine) prepareGVMTimerTickLocked(slot uint8) error {
+	if !m.reservedSymbols {
+		return nil
+	}
+	fail := func(err error) error {
+		m.state = machinecore.StateFaulted
+		return fmt.Errorf("prepare GVM timer slot %d: %w", slot, err)
+	}
+	if slot == 0 {
+		raw, err := m.vm.SymbolWord(3)
+		if err != nil {
+			return fail(err)
+		}
+		// The native counters are signed 16-bit C remainders.
+		counter := (int16(raw) + 1) % 5040
+		for index, value := range [...]int16{counter, counter % 2, counter % 3, counter % 6} {
+			if err := m.vm.SetSymbolWord(uint8(3+index), uint16(value)); err != nil {
+				return fail(err)
+			}
+		}
+	}
+	raw, err := m.vm.SymbolWord(6)
+	if err != nil {
+		return fail(err)
+	}
+	// A guest-written phase outside the six rows has no portable meaning
+	// (the native table index walks into a neighbouring gamma row), so the
+	// current phase stays.
+	if phase := int16(raw); phase >= 0 && phase < shared.SKTPalettePhases {
+		if err := m.display.SetGVMPalettePhase(uint8(phase)); err != nil {
+			return fail(err)
+		}
+	}
+	return nil
 }
 
 func (m *gvmMachine) advanceGVMAudioLocked(delta time.Duration) error {
@@ -902,6 +925,12 @@ func (m *gvmMachine) QueueInput(event machinecore.InputEvent) error {
 	if !known {
 		return ErrGVMInputUnavailable
 	}
+	if key == profile.KeyEnd {
+		if !event.Pressed {
+			return nil
+		}
+		return m.endGVMScriptLocked()
+	}
 	guestCode, supported := gvmhost.SKTGuestCode(key)
 	if !supported {
 		return ErrGVMInputUnavailable
@@ -921,13 +950,33 @@ func (m *gvmMachine) QueueInput(event machinecore.InputEvent) error {
 		m.lastResult = cpu.Result{Reason: cpu.StopExited, PC: uint32(m.vm.PC())}
 		return nil
 	}
-	if err := m.runOperationalLocked(context.Background(), false, -1); err != nil {
+	if err := m.runOperationalLocked(context.Background(), -1); err != nil {
 		return err
 	}
 	m.inputDispatches++
 	m.lastInputCode = guestCode
 	m.lastInputResult = m.lastResult
 	return nil
+}
+
+// endGVMScriptLocked is the END key. GVM2X does not pass code 15 to the
+// input entry: it runs the script's end entry (header 0x1e, symbol 0
+// untouched), stops its timers and sound, and closes the script
+// (sub_4148F0, sub_41E420).
+func (m *gvmMachine) endGVMScriptLocked() error {
+	m.hostRequests.close = true
+	if m.endEntry == 0 {
+		return m.finishGVMCloseRequestLocked()
+	}
+	started, err := m.vm.BeginDispatch(m.endEntry)
+	if err != nil {
+		m.state = machinecore.StateFaulted
+		return fmt.Errorf("begin operational GVM end dispatch at offset %d: %w", m.endEntry, err)
+	}
+	if !started {
+		return m.finishGVMCloseRequestLocked()
+	}
+	return m.runOperationalLocked(context.Background(), -1)
 }
 
 func (m *gvmMachine) Framebuffer() image.Image {

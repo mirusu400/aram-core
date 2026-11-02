@@ -43,29 +43,31 @@ func TestGVMIssue356JjayoTycoonContinuesPastReportedFault(t *testing.T) {
 		}
 		return fmt.Sprintf("%x", brewFrameHash(frame))
 	}
-	step(200)
-	for i := 0; i < 11; i++ {
+	// The title menu follows the publisher logo, paced by the guest timer.
+	step(420)
+	// Each story page waits for the guest timer before it takes the next select.
+	for i := 0; i < 20; i++ {
 		for _, pressed := range []bool{true, false} {
 			if err := machine.QueueInput(machinecore.InputEvent{Control: "select", Pressed: pressed}); err != nil {
 				t.Fatalf("select %d pressed=%t: %v", i+1, pressed, err)
 			}
 		}
-		step(10)
+		step(30)
 		if i == 1 {
-			const reportedFrame = "715769e157ca163315ccdc15d1a68c65cc2d693276625f26eed66cd23714bc83"
+			const reportedFrame = "fa46774673be0628fc7531ab10020b317b06aedc4304d9400da9018faf38552d"
 			if got := hash(); got != reportedFrame {
 				t.Fatalf("pre-fault frame = %s, want %s", got, reportedFrame)
 			}
 		}
 	}
-	const cowSelectionFrame = "45fa9e6413eae0e968f8cdaee033a95d4801f3be64e01d12c5bbd0bd7493a9aa"
-	if got := hash(); got != cowSelectionFrame {
-		t.Fatalf("cow selection frame = %s, want %s", got, cowSelectionFrame)
+	const farmFrame = "2600f7bba474d2cc3cbe5b559f228fd8144960643672b139a81610f5ff9a7174"
+	if got := hash(); got != farmFrame {
+		t.Fatalf("farm frame = %s, want %s", got, farmFrame)
 	}
 	diagnostics := machine.(interface {
 		GVMInputDispatchDiagnostics() GVMInputDispatchDiagnostics
 	}).GVMInputDispatchDiagnostics()
-	if diagnostics.DispatchCount != 11 || diagnostics.GuestCode != 20 {
+	if diagnostics.DispatchCount != 20 || diagnostics.GuestCode != 20 {
 		t.Fatalf("select dispatch = %+v", diagnostics)
 	}
 }

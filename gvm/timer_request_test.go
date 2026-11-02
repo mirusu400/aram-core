@@ -15,26 +15,9 @@ type timerRequest struct {
 
 type timerSink struct {
 	requests []timerRequest
-	fixed    []int16
 	modes    []uint8
 	cancels  []uint8
 	err      error
-}
-
-func (s *timerSink) RequestGVMFixedTimer(interval int16) error {
-	if s.err != nil {
-		return s.err
-	}
-	s.fixed = append(s.fixed, interval)
-	return nil
-}
-
-func TestFixedTimerRequestConsumesOneSignedWord(t *testing.T) {
-	sink := new(timerSink)
-	vm := timerVM(t, []byte{0x06, 0xff, 0xff, 0x94, 0xff}, sink)
-	if err := vm.Run(3); err != nil || !vm.Halted() || !reflect.DeepEqual(sink.fixed, []int16{-1}) || len(vm.Stack()) != 0 {
-		t.Fatalf("run=%v fixed=%v stack=%x", err, sink.fixed, vm.Stack())
-	}
 }
 
 func (s *timerSink) RequestGVMTimer(interval int16, selector uint16) error {

@@ -178,10 +178,21 @@ emulator was read, never run.
   runs all qualified titles at 128x160 with no host origin offset. Earlier
   profiles left both words at zero, which made titles centre on the origin
   (hence the old 120x80 window shifted by 60/40) and divide by zero.
-- **Events.** Titles marked timer-driven dispatch the event entry only when a
-  timer slot is due. The others still run it every frame: they also drive
-  themselves from the fixed timer (`94`), which the timer boundary does not
-  deliver yet.
+- **Events.** The event entry is the timer callback and runs only when one of
+  the three guest timer slots (`9a`..`9c`, cancelled by `9d`..`9f`) fires; all
+  slots due in a frame fire, in slot order. The callback (`sub_41E450`) first
+  publishes the slot in symbol 0. Slot 0 also advances a frame counter in
+  symbol 3 modulo 5040 and its remainders by 2, 3 and 6 in symbols 4..6, and
+  every slot selects the palette blink phase from symbol 6. The start entry
+  sees 1 in symbol 0. `94` is not a timer: it shakes the LCD for its argument
+  in seconds from a separate 200 ms host timer, and `95` stops that; neither
+  reaches the guest. (Treating `95` as a slot-0 cancel is what stopped
+  Ragnarok, and the old per-title "every frame" mode had hidden it.)
+- **Palette blink.** Each gamma level has six 182-byte remap rows, one per
+  blink phase (table `0x47CB6C`). They differ only for the blinking grays
+  (5..15) and colors (140..181), and every gamma row is the gamma-3 row through
+  the gamma curve. A phase change recolors later drawing and the current
+  drawing color, not pixels already drawn.
 - **Media neighbours.** Opcode `81` adds the element to the record pointer
   without bounding it. File records point into the loaded image and writable
   records are packed in index order in a 16 KiB RAM arena, so a read past the
@@ -198,8 +209,10 @@ emulator was read, never run.
   cap) and `89` its one-string formatter. Results go through the native media
   resize, so an odd growth leaves one extra byte.
 - **Keys.** Titles label guest code 13 as CLR, so both the clear key and the
-  first soft key send it. Code 15 ends the script on the emulator and 14 has
-  its own stateful route; neither is mapped.
+  first soft key send it. Code 14 is SEND: titles ask for "send키" where it
+  opens their WAP pages. END (15) never reaches the input entry: the emulator
+  runs the script's end entry (header `0x1e`), stops its timers and sound, and
+  closes the script, which the machine mirrors.
 - **Ellipses.** Opcode `65` fills (one span per row) and `64` outlines, both
   with the native midpoint decision values.
 - **Leaving the title.** `c4` copies a NUL-terminated media string, records a
@@ -253,10 +266,10 @@ tests and qualified reference frames.
 
 The older GVM path exposes the documented 182 public COLOR8 selectors only.
 Values 182..255 in a type-8 raster fail closed instead of being treated as a
-second undocumented palette. The exact native component ramps and blink cadence
-are not present in the available SDK reference or qualified assets, so portable
-presentation retains the current RGB332 expansion and initial blink phase rather
-than claiming reference-perfect color timing.
+second undocumented palette. The exact native component ramps are not present in
+the available SDK reference or qualified assets, so portable presentation keeps
+the current RGB332 expansion. The blink phases and their cadence follow the
+GVM2X timer callback described above.
 
 `FlushPartial` applies an inclusive clipped rectangle to the last presentation.
 Line/rectangle/rounded-rectangle operations use inclusive LCD coordinates and

@@ -38,6 +38,8 @@ func TestSKTDirectGuestCode(t *testing.T) {
 		// Titles label guest code 13 as CLR ("(OK/CLR)", "CLR EXIT") and
 		// treat it as cancel, so the clear/back key reaches it too.
 		{profile.KeyClear, 13},
+		// Titles ask for "send키" where code 14 opens their WAP pages.
+		{profile.KeySend, 14},
 		{profile.KeyUp, 16},
 		{profile.KeyDown, 17},
 		{profile.KeyLeft, 18},
@@ -50,7 +52,8 @@ func TestSKTDirectGuestCode(t *testing.T) {
 			t.Fatalf("SKTGuestCode(%d) = (%d,%v), want (%d,true)", test.key, got, ok, test.want)
 		}
 	}
-	for _, key := range []profile.KeyCode{profile.KeySoft2, profile.KeySoft3, profile.KeySend, profile.KeyEnd} {
+	// END is the machine's script close, not a guest code.
+	for _, key := range []profile.KeyCode{profile.KeySoft2, profile.KeySoft3, profile.KeyEnd} {
 		if got, ok := SKTGuestCode(key); ok {
 			t.Fatalf("SKTGuestCode(%d) = (%d,true)", key, got)
 		}

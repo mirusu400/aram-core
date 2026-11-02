@@ -157,6 +157,42 @@ func TestDisplayPaletteSelectorPastRemapRowDrawsDeviceZero(t *testing.T) {
 	}
 }
 
+// The blink phase changes later drawing and the current color, never the
+// pixels already drawn; phases outside the six native rows are rejected.
+func TestDisplayPalettePhaseRecolorsLaterDrawing(t *testing.T) {
+	d := newTestDisplay(t, 2, 1, DisplayOrientationDefault, SKTCompatibilityPalette{}, new(frameCollector))
+	if err := d.SelectGVMMapping(3); err != nil {
+		t.Fatal(err)
+	}
+	// Selector 140 blinks red/black at the neutral gamma.
+	if err := d.SelectGVMColor(140); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.FillGVMRectangle(0, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetGVMPalettePhase(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.FillGVMRectangle(1, 0, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := d.drawing.pixels; got[0] != 0x00 || got[1] != 0xe0 {
+		t.Fatalf("pixels = %#v, want black then red", got)
+	}
+	if err := d.SetGVMPalettePhase(6); !errors.Is(err, ErrInvalidDisplayConfig) || d.Snapshot().Phase != 1 {
+		t.Fatalf("phase 6 = %v, phase now %d", err, d.Snapshot().Phase)
+	}
+	// A palette without phases keeps drawing its single row.
+	plain := newTestDisplay(t, 1, 1, DisplayOrientationDefault, testPalette{failSelector: -1}, new(frameCollector))
+	if err := plain.SetGVMPalettePhase(3); err != nil {
+		t.Fatal(err)
+	}
+	if err := plain.FillGVMDisplay(7); err != nil || plain.drawing.pixels[0] != 7 {
+		t.Fatalf("plain palette fill = %v, %d", err, plain.drawing.pixels[0])
+	}
+}
+
 type testPalette struct {
 	failSelector int16
 }

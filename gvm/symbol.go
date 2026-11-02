@@ -1,6 +1,7 @@
 package gvm
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 )
@@ -68,4 +69,35 @@ func (v *VM) Symbol(index uint8) ([]byte, error) {
 		return nil, fmt.Errorf("%w: %d", ErrInvalidSymbol, index)
 	}
 	return append([]byte(nil), v.symbols[index]...), nil
+}
+
+// SymbolWord reads the first LE16 word of a symbol span.
+func (v *VM) SymbolWord(index uint8) (uint16, error) {
+	if int(index) >= len(v.symbols) {
+		return 0, fmt.Errorf("%w: %d", ErrInvalidSymbol, index)
+	}
+	if len(v.symbols[index]) < 2 {
+		return 0, ErrInvalidSymbolRegion
+	}
+	return binary.LittleEndian.Uint16(v.symbols[index]), nil
+}
+
+// SetSymbolWord writes the first LE16 word of a symbol span between dispatches,
+// the way native host wrappers update reserved symbols before calling an entry.
+// A sticky fault is returned unchanged and an active dispatch is rejected.
+func (v *VM) SetSymbolWord(index uint8, value uint16) error {
+	if v.fault != nil {
+		return v.fault
+	}
+	if !v.halted {
+		return ErrDispatchActive
+	}
+	if int(index) >= len(v.symbols) {
+		return fmt.Errorf("%w: %d", ErrInvalidSymbol, index)
+	}
+	if len(v.symbols[index]) < 2 {
+		return ErrInvalidSymbolRegion
+	}
+	binary.LittleEndian.PutUint16(v.symbols[index], value)
+	return nil
 }

@@ -87,10 +87,14 @@ type TimerModeRequestSink interface {
 	RequestGVMTimerMode(mode uint8, intervalMillis int16, selector uint16) error
 }
 
-// FixedTimerRequestSink accepts opcode94's single signed argument. The native
-// handler installs a distinct fixed host timer; delivery remains owner policy.
-type FixedTimerRequestSink interface {
-	RequestGVMFixedTimer(interval int16) error
+// VibrationSink receives opcode94 and opcode95. GVM2X runs opcode94's
+// argument times five 200 ms host ticks (timer ID 0x1003), each of which only
+// redraws the LCD with a horizontal shake; opcode95 kills that timer. Neither
+// reaches the guest, the timer slots, or the event entry. Without a sink both
+// opcodes are pure host effects and do nothing beyond their stack effect.
+type VibrationSink interface {
+	RequestGVMVibration(seconds int16) error
+	CancelGVMVibration() error
 }
 
 type TimerModeCancelSink interface {
@@ -375,6 +379,8 @@ type ServiceConfig struct {
 	// Timer is borrowed. GVM only forwards authenticated opcode9a requests; it
 	// does not advance time, install shared runtime timers or deliver callbacks.
 	Timer TimerRequestSink
+	// Vibration is borrowed and optional; see VibrationSink.
+	Vibration VibrationSink
 	// DisplayClear is borrowed. Opcode55 requests only a drawing-buffer fill;
 	// it does not publish or validate a frame.
 	DisplayClear DisplayClearSink
@@ -440,6 +446,7 @@ type serviceState struct {
 	random                 *gruntime.Random
 	randomStream           string
 	timer                  TimerRequestSink
+	vibration              VibrationSink
 	displayClear           DisplayClearSink
 	displayZero            DisplayZeroSink
 	displayFill            DisplayFillSink
@@ -527,6 +534,7 @@ func NewWithAddressSpaceAndServices(program []byte, entry uint32, space AddressS
 			state.random, state.randomStream = config.Random, strings.Clone(name)
 		}
 		state.timer = config.Timer
+		state.vibration = config.Vibration
 		state.displayClear = config.DisplayClear
 		state.displayZero = config.DisplayZero
 		state.displayFill = config.DisplayFill

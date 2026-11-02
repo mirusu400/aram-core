@@ -28,8 +28,10 @@ func TestGVMIssue358RagnarokStartsAndAcceptsSelect(t *testing.T) {
 		t.Fatal(err)
 	}
 	var before, after string
-	for frame := 0; frame < 120; frame++ {
-		if frame == 80 {
+	// The title paces itself from its guest timer; its title menu is up by
+	// frame 400.
+	for frame := 0; frame < 480; frame++ {
+		if frame == 400 {
 			for _, event := range []machinecore.InputEvent{
 				{Control: "select", Pressed: true},
 				{Control: "select", Pressed: false},
@@ -42,18 +44,18 @@ func TestGVMIssue358RagnarokStartsAndAcceptsSelect(t *testing.T) {
 		if err := machine.StepFrame(ctx); err != nil {
 			t.Fatalf("frame %d: %v", frame, err)
 		}
-		if frame == 79 {
+		if frame == 399 {
 			before = fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer()))
 		}
-		if frame == 119 {
+		if frame == 479 {
 			after = fmt.Sprintf("%x", brewFrameHash(machine.Framebuffer()))
 		}
 	}
 	if got, want := machine.Framebuffer().Bounds().Size(), image.Pt(int(operationalGVMWidth), int(operationalGVMHeight)); got != want {
 		t.Fatalf("canvas = %v, want %v", got, want)
 	}
-	const initialHash = "0e1b4a7a70415173c3b92679fe2d8b0d8b53bc55739c931bdd55baa86da6e621"
-	const selectedHash = "baa20aeb2369c06e31cdf133f8574df6d20a132d7f1e3e84013f06e4c7357897"
+	const initialHash = "a933ddb31c7ad13f3a8eb920c27fafbb73b7c6e70076501726fda9de8a44c97b"
+	const selectedHash = "6644aaca6ab9f3901e5c8f326ce91caff509730e4d48fac5f25c709f4eb51cbc"
 	if before != initialHash || after != selectedHash {
 		t.Fatalf("initial/selected frame hashes = %s/%s, want %s/%s", before, after, initialHash, selectedHash)
 	}

@@ -123,6 +123,8 @@ stored there, and X is (symbol, first-word index symbol).
 | `b7` | Replace centre, value, radius with centre-radius < value < centre+radius |
 | `c3` | Explicit service constructor only: request another script by (provider, script) ID with two media strings and two words, pop six, end the dispatch |
 | `c4`, `c5` | Explicit service constructor only: browser request for a NUL-terminated media URL (pop one) or exit; both end the dispatch |
+| `94`, `95` | Explicit service constructor only: vibrate for the popped number of seconds (`94`) or stop vibrating (`95`) through an optional sink; never a guest timer |
+| `9b`, `9c` / `9d`..`9f` | Explicit service constructor only: request timer slot 1 or 2 like `9a` / cancel slot 0, 1 or 2 |
 
 `40` compares against the sign-extended immediate before selecting its unsigned
 BE16 whole-buffer target. Equal values fall through, unequal values branch.

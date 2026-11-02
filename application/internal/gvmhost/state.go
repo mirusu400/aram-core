@@ -10,6 +10,7 @@ type DisplayState struct {
 	Auxiliary []byte
 	Mapping   uint8
 	Selector  uint8
+	Phase     uint8
 }
 
 func (d *DisplayAdapter) Snapshot() DisplayState {
@@ -22,6 +23,7 @@ func (d *DisplayAdapter) Snapshot() DisplayState {
 		Auxiliary: append([]byte(nil), d.auxiliary.pixels...),
 		Mapping:   d.mapping,
 		Selector:  d.selector,
+		Phase:     d.phase,
 	}
 }
 
@@ -32,10 +34,10 @@ func (d *DisplayAdapter) Restore(state DisplayState) error {
 	pixels := uint64(state.Width) * uint64(state.Height)
 	if state.Width != uint32(d.drawing.width) || state.Height != uint32(d.drawing.height) ||
 		pixels != uint64(len(state.Drawing)) || pixels != uint64(len(state.Auxiliary)) ||
-		state.Mapping > 6 || state.Selector > 181 {
+		state.Mapping > 6 || state.Selector > 181 || state.Phase > maxGVMPalettePhase {
 		return fmt.Errorf("%w: incompatible display state", ErrInvalidDisplayConfig)
 	}
-	active, err := d.palette.Map(state.Mapping, int16(state.Selector))
+	active, err := d.mapColor(state.Mapping, state.Phase, int16(state.Selector))
 	if err != nil {
 		return fmt.Errorf("%w: restore palette: %v", ErrInvalidDisplayConfig, err)
 	}
@@ -43,6 +45,7 @@ func (d *DisplayAdapter) Restore(state DisplayState) error {
 	copy(d.auxiliary.pixels, state.Auxiliary)
 	d.mapping = state.Mapping
 	d.selector = state.Selector
+	d.phase = state.Phase
 	d.activeColor = active
 	// Font handles are an internal cache owned by the newly constructed text
 	// service. They can be recreated without changing guest-visible state.
