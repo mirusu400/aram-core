@@ -188,9 +188,16 @@ type Runtime struct {
 	// pendingJavaThrow is the same description scoped to one guest slice; see
 	// BeginGuestSlice and TakeUndeliveredJavaThrow.
 	pendingJavaThrow string
-	hostCallFrames   [16]cpu.HostCallFrame
-	ime              *inputMethod
-	hostCallDepth    int
+	// uncaughtJavaExceptions counts the Java exceptions that escaped a card
+	// key callback and were absorbed; lastUncaughtJavaException keeps the
+	// fault text the last one would have ended the session with. See
+	// AbsorbUncaughtJavaException. Like LastJavaThrow, they are diagnostic
+	// only and not part of the deterministic machine state.
+	uncaughtJavaExceptions    uint64
+	lastUncaughtJavaException string
+	hostCallFrames            [16]cpu.HostCallFrame
+	ime                       *inputMethod
+	hostCallDepth             int
 }
 
 // Options contains immutable Raptor compatibility behavior selected while a

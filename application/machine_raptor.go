@@ -121,6 +121,19 @@ func (m *Machine) startRaptor(ctx context.Context) error {
 	return nil
 }
 
+// UncaughtGuestExceptions reports how many guest Java exceptions escaped an
+// event callback without ending the session, and the fault text of the last
+// one. It has the same shape as the SKVM machine's report, so a harness that
+// stops on the old fault still sees it.
+func (m *Machine) UncaughtGuestExceptions() (uint64, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.raptor == nil {
+		return 0, ""
+	}
+	return m.raptor.UncaughtJavaExceptions()
+}
+
 func (m *Machine) raptorFrameVisible() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -317,6 +330,22 @@ func (m *Machine) stepRaptorCallbackTask(
 		if callErr != nil || !completed || result.Reason == cpu.StopExited {
 			break
 		}
+		if m.raptor.Clet.Paint == 0 && m.raptor.IsJavaInputCallback(task.Callback) {
+			// A Java card's repaint() queues a paint behind the key event
+			// that asked for it, and on a handset the next key arrives after
+			// that paint has run. Several held keys can deliver their events
+			// in the same frame here, so service that paint before the next
+			// callback. Without this the paint only ran in a frame with no
+			// callbacks at all. 월드장기체스's menu switches to its message
+			// box state on one key and opens the box over the paints after
+			// it. A second key in the same frame reached the box's handler
+			// before the box had been painted once (issue #575). The present
+			// this paint records ends the frame below.
+			if _, err := m.raptor.RepaintDirtyJavaCard(ctx); err != nil {
+				callErr = err
+				break
+			}
+		}
 		if spent >= budget {
 			break
 		}
@@ -465,6 +494,15 @@ func (m *Machine) runRaptorCallbackTask(
 	safepointYielded = m.raptor.TakeJavaSafepointYield()
 	m.resumeRaptorInvalidDraw(&result)
 	if result.Err != nil {
+		fault := fmt.Sprintf("execute Raptor Clet at 0x%08x: %v", result.PC, result.Err)
+		if m.raptor.AbsorbUncaughtJavaException(task.Callback, result.Err, fault) {
+			// The key event is over, as if keyNotify had returned. The
+			// deferred restore puts back the context this callback
+			// interrupted, and the caller retires the task.
+			result.Reason = cpu.StopBreakpoint
+			result.Err = nil
+			return result, true, safepointYielded, nil
+		}
 		return result, false, safepointYielded, result.Err
 	}
 	if result.Reason == cpu.StopExited {

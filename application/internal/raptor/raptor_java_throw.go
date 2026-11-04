@@ -1,6 +1,11 @@
 package raptor
 
-import "fmt"
+import (
+	"fmt"
+
+	ktfrt "github.com/mirusu400/aram-core/application/internal/ktf"
+	wipirt "github.com/mirusu400/aram-core/application/internal/wipi"
+)
 
 // The LGT Raptor AOT compiler does not inline Java's implicit runtime checks.
 // It emits the compare, a branch over the failure path, and a call to a helper
@@ -101,4 +106,52 @@ func (r *Runtime) TakeUndeliveredJavaThrow() (string, bool) {
 		return "", false
 	}
 	return description, true
+}
+
+// AbsorbUncaughtJavaException applies a handset event dispatcher's policy to a
+// Java exception that escaped a card's keyNotify. The dispatcher catches what
+// the listener let escape, and the event is simply over. The title keeps
+// running with whatever state the handler had already written.
+//
+// The AOT bridge cannot unwind a host Java exception into guest catch blocks
+// (see above), so the exception reaches this point even when the title would
+// have caught it inside the handler. Ending the event there is still closer
+// to the handset than ending the session. SKVM absorbs exceptions at the same
+// boundary.
+//
+// 월드장기체스 opens its 환경설정 box in two steps. One key switches the state.
+// The box then animates open over a few paints and only afterwards posts its
+// message. The box's key handler reads message 0 unchecked, so a key pressed
+// while it opens indexes an empty Vector (issue #575).
+//
+// Only a host-raised exception is absorbed. The host raises it in place of
+// returning, so no guest code has run past the throw. A guest implicit-check
+// throw resumes the guest instead (see recordRaptorJavaThrow), and the fault
+// that may follow is left alone. fault is the text the session would have
+// ended with. It is kept so a caller polling UncaughtJavaExceptions reports
+// the same failure.
+func (r *Runtime) AbsorbUncaughtJavaException(
+	callback wipirt.GuestCallback,
+	err error,
+	fault string,
+) bool {
+	class, ok := ktfrt.UnhandledJavaException(err)
+	if !ok || !r.IsJavaInputCallback(callback) {
+		return false
+	}
+	r.uncaughtJavaExceptions++
+	r.lastUncaughtJavaException = fault
+	if r.Public != nil && r.Public.Observed != nil {
+		r.Public.Observed["RAPTOR.Java.uncaught."+class]++
+	}
+	return true
+}
+
+// UncaughtJavaExceptions reports how many Java exceptions escaped a card key
+// callback and were absorbed, and the fault text of the last one.
+func (r *Runtime) UncaughtJavaExceptions() (uint64, string) {
+	if r == nil {
+		return 0, ""
+	}
+	return r.uncaughtJavaExceptions, r.lastUncaughtJavaException
 }

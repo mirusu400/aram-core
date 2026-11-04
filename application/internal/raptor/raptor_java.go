@@ -2465,26 +2465,50 @@ func (r *Runtime) JavaInputCallback(
 	if !ok {
 		return wipirt.GuestCallback{}, false
 	}
-	class := r.raptorJavaClassForObject(r.Java, r.Java.currentCard)
+	body := r.raptorJavaKeyNotify(r.Java.currentCard)
+	if body == 0 {
+		return wipirt.GuestCallback{}, false
+	}
+	eventType := ktfrt.KeyReleased
+	if event.Pressed {
+		eventType = ktfrt.KeyPressed
+	}
+	return wipirt.GuestCallback{
+		Procedure: body,
+		Args: [4]uint32{
+			r.Java.currentCard,
+			eventType,
+			uint32(int32(key)),
+		},
+	}, true
+}
+
+// IsJavaInputCallback reports whether callback is a key event JavaInputCallback
+// built: its receiver's keyNotify(II)Z body, called with a key event type.
+func (r *Runtime) IsJavaInputCallback(callback wipirt.GuestCallback) bool {
+	if r == nil || r.Java == nil || callback.Procedure == 0 {
+		return false
+	}
+	switch callback.Args[1] {
+	case ktfrt.KeyPressed, ktfrt.KeyReleased:
+	default:
+		return false
+	}
+	return r.raptorJavaKeyNotify(callback.Args[0]) == callback.Procedure
+}
+
+// raptorJavaKeyNotify resolves the keyNotify(II)Z body a card's class chain
+// declares, or 0 when it declares none.
+func (r *Runtime) raptorJavaKeyNotify(card uint32) uint32 {
+	class := r.raptorJavaClassForObject(r.Java, card)
 	for depth := 0; class != nil && depth < 256; depth++ {
 		method, found := DeclaredMethod(class, "keyNotify", "(II)Z")
 		if found && method.Body != 0 {
-			eventType := ktfrt.KeyReleased
-			if event.Pressed {
-				eventType = ktfrt.KeyPressed
-			}
-			return wipirt.GuestCallback{
-				Procedure: method.Body,
-				Args: [4]uint32{
-					r.Java.currentCard,
-					eventType,
-					uint32(int32(key)),
-				},
-			}, true
+			return method.Body
 		}
 		class = r.Java.ClassByName[class.parentName]
 	}
-	return wipirt.GuestCallback{}, false
+	return 0
 }
 
 // JavaMediaCompletionCallback updates the embedded KTF Clip state after the

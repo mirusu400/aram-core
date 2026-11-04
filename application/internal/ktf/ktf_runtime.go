@@ -2,6 +2,7 @@ package ktf
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/mirusu400/aram-core/internal/ime"
 	"image"
@@ -1127,6 +1128,17 @@ func (e *ktfUnhandledJavaException) Error() string {
 		e.detail,
 		e.Context,
 	)
+}
+
+// UnhandledJavaException reports the class of the Java exception err carries
+// when no guest handler caught it. Another runtime that shares this host
+// (Raptor) uses it to apply its own uncaught-exception policy.
+func UnhandledJavaException(err error) (string, bool) {
+	var unhandled *ktfUnhandledJavaException
+	if !errors.As(err, &unhandled) {
+		return "", false
+	}
+	return unhandled.name, true
 }
 
 // KTFIsolatedTaskFault is one unhandled guest Java exception that terminated a

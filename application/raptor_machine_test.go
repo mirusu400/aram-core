@@ -670,6 +670,83 @@ func TestRaptorFrameDefersCallbackBatchContainingInput(t *testing.T) {
 	}
 }
 
+// A Java card's key event and the repaint it asked for are serviced in order:
+// the paint runs before the next queued key, even when both keys reached the
+// machine in the same frame. 월드장기체스 switches to its 환경설정 message box
+// on one key and posts the box's message on the next paint; a second key that
+// ran first read the empty message Vector (issue #575).
+func TestRaptorJavaKeyRepaintRunsBeforeNextKey(t *testing.T) {
+	machine := newSyntheticMachine(t)
+	const (
+		code    = uint32(0x04000000)
+		paint   = code
+		key     = code + 0x20
+		painted = code + 0x100
+		seen    = code + 0x104
+	)
+	check(t, machine.cpu.Map(
+		code,
+		0x1000,
+		cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+	))
+	word := func(value uint32) []byte {
+		return binary.LittleEndian.AppendUint32(nil, value)
+	}
+	// paint: painted++
+	check(t, machine.cpu.WriteMemory(paint, append([]byte{
+		0x02, 0x4a, // ldr  r2, [pc, #8]  ; =painted
+		0x13, 0x68, // ldr  r3, [r2]
+		0x01, 0x33, // adds r3, #1
+		0x13, 0x60, // str  r3, [r2]
+		0x70, 0x47, // bx   lr
+		0x00, 0xbf, // nop
+	}, word(painted)...)))
+	// keyNotify: seen = painted; return true
+	check(t, machine.cpu.WriteMemory(key, append(append([]byte{
+		0x02, 0x4a, // ldr  r2, [pc, #8]  ; =painted
+		0x13, 0x68, // ldr  r3, [r2]
+		0x02, 0x4a, // ldr  r2, [pc, #8]  ; =seen
+		0x13, 0x60, // str  r3, [r2]
+		0x01, 0x20, // movs r0, #1
+		0x70, 0x47, // bx   lr
+	}, word(painted)...), word(seen)...)))
+	machine.frameRunBudget = 1024
+	machine.raptor = &raptorrt.Runtime{
+		CPU:     machine.cpu,
+		Public:  machine.wipi,
+		Started: true,
+	}
+	// The pending repaint stands for the one the first key asks for.
+	_, err := machine.raptor.InstallJavaCardForTest(key|1, paint|1)
+	check(t, err)
+	for _, control := range []string{"ok", "left"} {
+		callback, ok := machine.raptor.JavaInputCallback(
+			machinecore.InputEvent{Control: control, Pressed: true},
+		)
+		if !ok {
+			t.Fatalf("no key callback for %q", control)
+		}
+		machine.raptor.CallbackTasks = append(
+			machine.raptor.CallbackTasks,
+			&raptorrt.CallbackTask{Callback: callback},
+		)
+	}
+
+	for range 3 {
+		check(t, machine.StepFrame(context.Background()))
+	}
+	var values [8]byte
+	check(t, machine.cpu.ReadMemory(painted, values[:]))
+	paints := binary.LittleEndian.Uint32(values[:4])
+	before := binary.LittleEndian.Uint32(values[4:])
+	if paints != 1 {
+		t.Fatalf("card painted %d times, want 1", paints)
+	}
+	if before != 1 {
+		t.Fatalf("second key ran after %d paints, want 1", before)
+	}
+}
+
 // A callback that yields across frames is not necessarily finite: White Day's
 // main callback owns its game loop and presents forever. Input queued strictly
 // behind that suspended callback can therefore never run. Only a saved task is
