@@ -82,7 +82,15 @@ func (decoder *smafDecoder) decodeExclusive(data []byte, base, count int, at uin
 		decoder.addEvent(smafEvent{sample: at, kind: smafMasterVolumeChange, channel: base, a: volume})
 		return
 	}
-	if smafMA3ChannelTuning(data) {
+	if device, channel, mode, ok := parseSMAFStreamGainMode(data); ok {
+		if device != 7 || channel < 1 || base+channel-1 >= len(decoder.channels) {
+			return
+		}
+		if !timed {
+			decoder.channels[base+channel-1].streamHalf = mode != 2
+			return
+		}
+		decoder.addEvent(smafEvent{sample: at, kind: smafStreamGainMode, channel: base + channel - 1, a: mode})
 		return
 	}
 	if voice := parseSMAFVoice(data); voice.valid {
@@ -171,15 +179,19 @@ func (volume smafMasterVolume) gain() float64 {
 	return scale * scale
 }
 
-// smafMA3ChannelTuning recognises 43 79 06|07 7F 0B <channel> <parameter>
-// <value>, a per-channel MA-3/MA-5 setting 83 corpus titles send mid-sequence.
-// Its value is the neutral 0x40 in all but three of the 553 corpus messages
-// (parameters 0, 1 and 2, centred like the GM tuning parameters), and nothing
-// in the corpus or the reference players pins down what a non-neutral value
-// does. It is consumed without effect rather than guessed at: a wrong reading
-// of a tuning value is exactly the kind of off-key note the pitch-bend
-// sensitivity fix removed.
-func smafMA3ChannelTuning(data []byte) bool {
-	return len(data) == 8 && data[0] == 0x43 && data[1] == 0x79 &&
-		(data[2] == 6 || data[2] == 7) && data[3] == 0x7f && data[4] == 0x0b
+// parseSMAFStreamGainMode recognises 43 79 06|07 7F 0B <channel> <mode>
+// <value>, which 83 corpus titles send mid-sequence.
+//
+// The SPH-W8300's SMAF library (firmware 0x15c0c58) is the reference. It
+// handles the message for MA-5 scores (device 07) only: the audio slots
+// playing on that channel, counted from 1, are set to the full (vv+1)^2
+// master level when mode is 2 and to half of it otherwise, and the value byte
+// is never read. The MA-3 form (device 06) has no handler there, so it is
+// consumed without effect, as on the handset.
+func parseSMAFStreamGainMode(data []byte) (device, channel, mode int, ok bool) {
+	if len(data) != 8 || data[0] != 0x43 || data[1] != 0x79 ||
+		(data[2] != 6 && data[2] != 7) || data[3] != 0x7f || data[4] != 0x0b {
+		return 0, 0, 0, false
+	}
+	return int(data[2]), int(data[5]), int(data[6]), true
 }

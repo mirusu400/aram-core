@@ -62,6 +62,7 @@ const (
 	smafDirectPitch  // MA-2 register F-Number change while keyed
 	smafDirectKeyOff // MA-2 register key-off
 	smafMasterVolumeChange
+	smafStreamGainMode // MA-5 7F 0B: a = mode, 2 is full level
 )
 
 type smafEvent struct {
@@ -80,6 +81,7 @@ type smafChannel struct {
 	bendValue                 int     // last pitch bend, -8192..8191
 	bendSensitivity           smafBendSensitivity
 	rpn                       smafRegisteredParameter
+	streamHalf                bool // MA-5 7F 0B put this channel's stream audio at half level
 	modulation                float64
 	holdPedal                 bool
 	octaveShift               int
@@ -134,6 +136,7 @@ type smafPCMVoice struct {
 	panFixed       bool
 	loopStart, end int // decoded frame indices; end is exclusive
 	loop, looped   bool
+	stream         bool // a score-track stream wave (Mtsp), not an instrument or ATR wave
 }
 
 // tick reads one output sample from the wave bank. The banks hold Yamaha ADPCM
@@ -1158,6 +1161,9 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		decoder.listFMVoice(slot)
 	case smafMasterVolumeChange:
 		decoder.masterVolume.set(event.a)
+	case smafStreamGainMode:
+		channel.streamHalf = event.a != 2
+		decoder.updatePCMVolume(event.channel)
 	case smafDirectKeyOn:
 		decoder.startDirectVoice(event)
 	case smafDirectPitch:

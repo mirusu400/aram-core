@@ -91,7 +91,8 @@ func (decoder *smafDecoder) startStreamWave(event smafEvent, number int) {
 		voice.gated = true
 		voice.velocity = float64(event.b&127) / 127
 		voice.velocity *= voice.velocity
-		voice.volume = voice.velocity * channel.volume * channel.expression
+		voice.stream = true
+		voice.volume = voice.velocity * channel.volume * channel.expression * channel.streamGain()
 		voice.pan = channel.pan
 		return
 	}
@@ -103,6 +104,18 @@ func (decoder *smafDecoder) updatePCMVolume(channelIndex int) {
 		voice := &decoder.pcmPool[index]
 		if voice.active && voice.gated && voice.channel == channelIndex {
 			voice.volume = voice.velocity * channel.volume * channel.expression
+			if voice.stream {
+				voice.volume *= channel.streamGain()
+			}
 		}
 	}
+}
+
+// streamGain is the level of the channel's stream audio relative to the
+// master level: half after an MA-5 7F 0B message with a mode other than 2.
+func (channel *smafChannel) streamGain() float64 {
+	if channel.streamHalf {
+		return 0.5
+	}
+	return 1
 }
