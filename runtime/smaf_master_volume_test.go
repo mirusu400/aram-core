@@ -57,8 +57,9 @@ func TestSMAFMasterVolumeScalesTheWholeScore(t *testing.T) {
 	if math.Abs(full-unset) > unset*0.01 {
 		t.Fatalf("master volume 127 changed the level: %.1f, want %.1f", full, unset)
 	}
-	want := unset * 64 / 127
+	// The handset's law: (vv+1)^2 against 128^2 at full scale.
+	want := unset * (65.0 / 128) * (65.0 / 128)
 	if math.Abs(half-want) > want*0.05 {
-		t.Fatalf("master volume 64 rms = %.1f, want %.1f (64/127 of %.1f)", half, want, unset)
+		t.Fatalf("master volume 64 rms = %.1f, want %.1f ((65/128)^2 of %.1f)", half, want, unset)
 	}
 }

@@ -147,9 +147,13 @@ func parseSMAFMasterVolume(data []byte) (int, bool) {
 	return int(data[5]), true
 }
 
-// smafMasterVolume scales the whole mix. It uses the same linear law as the
-// channel volume. The zero value is full scale: a score that never sends the
-// message plays exactly as before.
+// smafMasterVolume scales the whole mix. The zero value is full scale: a score
+// that never sends the message plays exactly as before.
+//
+// The law is the handset's. The SPH-W8300's SMAF library (firmware 0x15c0b54)
+// forwards the message to its synthesizer as the GM master volume
+// F0 7F 7F 04 01 00 vv F7 and sets its audio slots to (vv+1)^2, so 127 is
+// unity and the gain falls with the square of the value, as GM volume does.
 type smafMasterVolume struct {
 	sent  bool
 	value int
@@ -163,7 +167,8 @@ func (volume smafMasterVolume) gain() float64 {
 	if !volume.sent {
 		return 1
 	}
-	return float64(volume.value) / 127
+	scale := float64(volume.value+1) / 128
+	return scale * scale
 }
 
 // smafMA3ChannelTuning recognises 43 79 06|07 7F 0B <channel> <parameter>
