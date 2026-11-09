@@ -14,16 +14,16 @@ type smafParsedVoice struct {
 // parseSMAFVoice decodes the voice-definition exclusives the decoder knows:
 // 43 79 06|07 7F 01 (MA-3/MA-5), 43 05 01 and 43 03.
 //
-// The MA-1 setup form 43 02 <slot> <bank> <program> <13 bytes> is not
-// decoded. In all 25 corpus files every program change names exactly the
-// program byte of one of these voices, so their notes already play
-// gmSMAFPatch's patch for that program (read as GM: 0x24 slap bass, 0x38
-// trumpet, 0x47 clarinet). The
-// 13-byte body does not fit the MA-2 operator layout or the OPL and OPLL
-// register images: under each of them most of the 42 distinct corpus voices
-// get a carrier attack rate of 0-3, a near-silent attack no title would ship.
-// Only 16 corpus titles carry the form, so it stays on the GM fallback until
-// its layout can be confirmed instead of guessed.
+// The MA-1 setup form 43 02 <slot> <bank> <program> <13 bytes> is ignored,
+// as a handset ignores it. The SPH-W8300's SMAF library accepts voice
+// exclusives by length and maker command only - 0x12 and 0x1C bytes of
+// 43 03, 0x14 and 0x22 of 43 04, 0x16, 0x17 and 0x25 of 43 05 (firmware
+// 0x15ba962 and 0x15bb8d0-0x15bc064) - and has no path for a 0x13-byte
+// 43 02 definition, so the handset plays such a channel on its built-in voice
+// for the program. That is what the decoder does: in all 25 corpus scores
+// every program change names exactly the program byte of one of these voices,
+// and the channel plays gmSMAFPatch's patch for that program (0x24 slap bass,
+// 0x38 trumpet, 0x47 clarinet read as GM).
 func parseSMAFVoice(data []byte) smafParsedVoice {
 	voice := smafParsedVoice{patch: defaultSMAFPatch()}
 	if len(data) < 5 || data[0] != 0x43 {
