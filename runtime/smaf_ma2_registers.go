@@ -17,7 +17,10 @@ import "math"
 // bits select the channel within the track. The F-Numbers keyed in the corpus
 // land on an equal-tempered ladder that f = F-Number * 49716 / 2^(20-block)
 // puts within a few cents of concert pitch, in the octave the same channel's
-// notes use.
+// notes use. The SPH-W8300 firmware agrees: its handler (0x15bf8f0) turns
+// the registers into a MIDI note of block*12+13 (+6 when F-Number bit 8 is
+// clear) refined by pitch bend, which puts block 4 F-Number 365 on C#4 and
+// 516 on G4, the pitches this formula gives.
 type smafMA2Registers struct {
 	fnumLow [16]int
 	control [16]int
@@ -29,14 +32,18 @@ const (
 	smafMA2RegisterCommand = 0x90
 	// smafMA2VoiceSlotCommand is 43 03 91 <0x18+r> <value>: each nibble of
 	// register 0x18+r names the setup voice slot (the index byte of a
-	// 43 03 <slot> <bank> <program> voice) that chip channel 2r (low nibble)
-	// or 2r+1 (high nibble) plays; the default is the channel's own number.
-	// Score track n writes only the two registers for its four channels. In
-	// the test corpus the slot a channel is given names the same bank and
-	// program as that channel's own program change in 4,111 of 4,145 cases,
-	// and no channel that plays notes lacks a program change. The decoder
-	// already picks each channel's voice by bank and program, so the
-	// assignment is consumed without changing what plays.
+	// 43 03 <slot> <bank> <program> voice) for chip channel 2r (low nibble)
+	// or 2r+1 (high nibble); the default is the channel's own number, and
+	// score track n writes only the two registers for its four channels.
+	//
+	// A handset does nothing with it. The SPH-W8300's SMAF library decodes
+	// in-sequence 43 03 exclusives at firmware 0x15bfaa8, acts on 0x90 alone
+	// (B0+ch F-Number low, C0+ch key-on/block/F-Number high) and sends every
+	// other command straight to the next event (0x15bfb92 -> 0x15bff58). The
+	// corpus agrees that nothing is lost: the slot a channel is given names
+	// the bank and program of that channel's own program change in 4,111 of
+	// 4,145 cases, and no channel that plays notes lacks a program change. The
+	// write is therefore consumed without effect, exactly as the handset does.
 	smafMA2VoiceSlotCommand = 0x91
 )
 
