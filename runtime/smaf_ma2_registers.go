@@ -2,8 +2,8 @@ package runtime
 
 import "math"
 
-// smafMA2Registers follows a HandyPhone (MA-2) sequence's direct FM register
-// writes, FF F0 <length> 43 03 90 <register> <value> F7.
+// smafMA2Registers follows a HandyPhone (MA-2) sequence's direct chip writes,
+// FF F0 <length> 43 03 90|91 <register> <value> F7.
 //
 // A title can sound a channel's voice without sending notes by writing the
 // chip's frequency registers from the sequence: 0xB0+ch holds the low eight
@@ -25,7 +25,20 @@ type smafMA2Registers struct {
 	noteID  [16]uint32
 }
 
-const smafMA2RegisterCommand = 0x90
+const (
+	smafMA2RegisterCommand = 0x90
+	// smafMA2VoiceSlotCommand is 43 03 91 <0x18+r> <value>: each nibble of
+	// register 0x18+r names the setup voice slot (the index byte of a
+	// 43 03 <slot> <bank> <program> voice) that chip channel 2r (low nibble)
+	// or 2r+1 (high nibble) plays; the default is the channel's own number.
+	// Score track n writes only the two registers for its four channels. In
+	// the test corpus the slot a channel is given names the same bank and
+	// program as that channel's own program change in 4,111 of 4,145 cases,
+	// and no channel that plays notes lacks a program change. The decoder
+	// already picks each channel's voice by bank and program, so the
+	// assignment is consumed without changing what plays.
+	smafMA2VoiceSlotCommand = 0x91
+)
 
 func smafMA2RegisterFrequency(fnum, block int) float64 {
 	return float64(fnum) * 49716 / math.Exp2(float64(20-block))
@@ -39,8 +52,13 @@ func (registers *smafMA2Registers) write(
 	base int,
 	at uint64,
 ) bool {
-	if len(payload) != 5 || payload[0] != 0x43 || payload[1] != 0x03 ||
-		payload[2] != smafMA2RegisterCommand {
+	if len(payload) != 5 || payload[0] != 0x43 || payload[1] != 0x03 {
+		return false
+	}
+	if payload[2] == smafMA2VoiceSlotCommand {
+		return true
+	}
+	if payload[2] != smafMA2RegisterCommand {
 		return false
 	}
 	register, value := int(payload[3]), int(payload[4])
