@@ -47,6 +47,9 @@ func parseSMAFSampledWave(data []byte) smafWave {
 }
 
 func (decoder *smafDecoder) setVoice(voice smafParsedVoice) {
+	if voice.hasSlot {
+		decoder.ma2Slots[voice.slot] = voice
+	}
 	for index := range decoder.voices {
 		if decoder.voices[index].key == voice.key {
 			decoder.voices[index] = voice

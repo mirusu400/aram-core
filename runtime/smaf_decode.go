@@ -63,6 +63,7 @@ const (
 	smafDirectKeyOff // MA-2 register key-off
 	smafMasterVolumeChange
 	smafStreamGainMode // MA-5 7F 0B: a = mode, 2 is full level
+	smafVoiceSlot      // MA-2 43 03 91: a = setup voice slot
 )
 
 type smafEvent struct {
@@ -82,6 +83,7 @@ type smafChannel struct {
 	bendSensitivity           smafBendSensitivity
 	rpn                       smafRegisteredParameter
 	streamHalf                bool // MA-5 7F 0B put this channel's stream audio at half level
+	voiceSlot                 int  // MA-2 43 03 91 setup slot + 1; 0 follows the program
 	modulation                float64
 	holdPedal                 bool
 	octaveShift               int
@@ -108,6 +110,7 @@ type smafDecoder struct {
 	nextPCM      int
 	timelineEnd  uint64 // declared rest/NOP/end time, independent of voice tails
 	masterVolume smafMasterVolume
+	ma2Slots     [16]smafParsedVoice // HandyPhone setup voices by slot, for 43 03 91
 }
 
 type smafPCMVoice struct {
@@ -993,6 +996,11 @@ func (decoder *smafDecoder) resolveVoice(
 	channel smafChannel,
 	note int,
 ) *smafParsedVoice {
+	if channel.voiceSlot > 0 {
+		if voice := &decoder.ma2Slots[channel.voiceSlot-1]; voice.valid && voice.hasSlot {
+			return voice
+		}
+	}
 	var melody *smafParsedVoice
 	for index := range decoder.voices {
 		voice := &decoder.voices[index]
@@ -1035,6 +1043,7 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		}
 	case smafProgram:
 		channel.program = event.a
+		channel.voiceSlot = 0
 	case smafBankMSB:
 		channel.bankMSB = event.a
 	case smafBankLSB:
@@ -1161,6 +1170,8 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		decoder.listFMVoice(slot)
 	case smafMasterVolumeChange:
 		decoder.masterVolume.set(event.a)
+	case smafVoiceSlot:
+		channel.voiceSlot = event.a + 1
 	case smafStreamGainMode:
 		channel.streamHalf = event.a != 2
 		decoder.updatePCMVolume(event.channel)

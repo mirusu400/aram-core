@@ -32,18 +32,19 @@ const (
 	smafMA2RegisterCommand = 0x90
 	// smafMA2VoiceSlotCommand is 43 03 91 <0x18+r> <value>: each nibble of
 	// register 0x18+r names the setup voice slot (the index byte of a
-	// 43 03 <slot> <bank> <program> voice) for chip channel 2r (low nibble)
-	// or 2r+1 (high nibble); the default is the channel's own number, and
-	// score track n writes only the two registers for its four channels.
+	// 43 03 <slot> <bank> <program> voice) that chip channel 2r (low nibble)
+	// or 2r+1 (high nibble) plays; score track n writes only the two
+	// registers for its four channels, and the default is the channel's own
+	// number.
 	//
-	// A handset does nothing with it. The SPH-W8300's SMAF library decodes
-	// in-sequence 43 03 exclusives at firmware 0x15bfaa8, acts on 0x90 alone
-	// (B0+ch F-Number low, C0+ch key-on/block/F-Number high) and sends every
-	// other command straight to the next event (0x15bfb92 -> 0x15bff58). The
-	// corpus agrees that nothing is lost: the slot a channel is given names
-	// the bank and program of that channel's own program change in 4,111 of
-	// 4,145 cases, and no channel that plays notes lacks a program change. The
-	// write is therefore consumed without effect, exactly as the handset does.
+	// On MA-2 hardware the score drives the chip itself: the SPH-X4209's
+	// player (firmware 0x142c34) streams the exclusives straight into the
+	// chip, so the write lands in the register that picks the channel's
+	// voice. It is applied that way here, last writer wins against the
+	// channel's program change. In the corpus the slot a channel is given
+	// names the bank and program of its own program change in 4,111 of 4,145
+	// cases, so it mostly agrees; an MA-5 handset (SPH-W8300, 0x15bfaa8)
+	// that emulates MA-2 content in software skips it.
 	smafMA2VoiceSlotCommand = 0x91
 )
 
@@ -63,6 +64,16 @@ func (registers *smafMA2Registers) write(
 		return false
 	}
 	if payload[2] == smafMA2VoiceSlotCommand {
+		register, value := int(payload[3]), int(payload[4])
+		if register < 0x18 || register > 0x1f {
+			return true
+		}
+		for half, chip := range [2]int{(register - 0x18) * 2, (register-0x18)*2 + 1} {
+			decoder.addEvent(smafEvent{
+				sample: at, kind: smafVoiceSlot, channel: base + chip&3,
+				a: value >> (4 * half) & 15,
+			})
+		}
 		return true
 	}
 	if payload[2] != smafMA2RegisterCommand {

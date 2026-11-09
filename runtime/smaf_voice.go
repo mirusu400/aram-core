@@ -9,6 +9,10 @@ type smafParsedVoice struct {
 	patch smafPatch
 	pcm   *smafPCMPatch
 	valid bool
+	// slot is the HandyPhone setup slot (the index byte of 43 03 <slot>
+	// <bank> <program>) the voice was loaded into, for 43 03 91 to select.
+	slot    int
+	hasSlot bool
 }
 
 // parseSMAFVoice decodes the voice-definition exclusives the decoder knows:
@@ -88,6 +92,7 @@ func parseSMAFVoice(data []byte) smafParsedVoice {
 		return voice
 	}
 	if len(data) >= 7 && data[1] == 0x03 {
+		voice.slot, voice.hasSlot = int(data[2]&0x0f), data[2] < 0x10
 		voice.key.bankLSB = int(data[3] & 0x7f)
 		voice.key.program = int(data[4])
 		body := data[5:]
