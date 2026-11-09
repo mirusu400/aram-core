@@ -918,6 +918,9 @@ func (decoder *smafDecoder) decodeHandyPhone(
 						sample: at, kind: smafModulation, channel: channel,
 						a: 1000 + shift, b: 1,
 					})
+				case 3:
+					kind = smafModulation
+					longValue &= 0x7f
 				case 4:
 					kind = smafPitchBend
 					longValue = (longValue - 64) * 128

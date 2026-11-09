@@ -6,11 +6,15 @@ import (
 	"testing"
 )
 
-// smafModulationScore is a HandyPhone (MA-2) score: optionally a short-form
-// modulation control (class 2) with the given index, then C5 for 2 s.
+// smafModulationScore is a HandyPhone (MA-2) score: optionally a modulation
+// control, then C5 for 2 s. A short-form control (class 2) carries a table
+// index 0-15; a long-form one (class 3, control 3) carries the depth 0-127,
+// passed here as 16 + depth.
 func smafModulationScore(index int) []byte {
 	sequence := []byte{0x00, 0x00, 0x30, 0x00} // channel 0 program 0
-	if index >= 0 {
+	if index >= 16 {
+		sequence = append(sequence, 0x00, 0x00, 0x33, byte(index-16))
+	} else if index >= 0 {
 		sequence = append(sequence, 0x00, 0x00, byte(0x20|index))
 	}
 	// C5 is octave 3 note 0 above the format's MIDI 36 base; gate 500 ticks.
@@ -65,5 +69,8 @@ func TestSMAFModulationAddsVibrato(t *testing.T) {
 	}
 	if deep < 0.01 {
 		t.Fatalf("full modulation spreads the pitch by only %.4f, want vibrato of at least 1%%", deep)
+	}
+	if long := smafPitchSpread(t, smafModulationScore(16+127), c5); long < 0.01 {
+		t.Fatalf("long-form modulation 127 spreads the pitch by only %.4f, want vibrato of at least 1%%", long)
 	}
 }
