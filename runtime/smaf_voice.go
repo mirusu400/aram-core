@@ -11,6 +11,19 @@ type smafParsedVoice struct {
 	valid bool
 }
 
+// parseSMAFVoice decodes the voice-definition exclusives the decoder knows:
+// 43 79 06|07 7F 01 (MA-3/MA-5), 43 05 01 and 43 03.
+//
+// The MA-1 setup form 43 02 <slot> <bank> <program> <13 bytes> is not
+// decoded. In all 25 corpus files every program change names exactly the
+// program byte of one of these voices, so their notes already play
+// gmSMAFPatch's patch for that program (read as GM: 0x24 slap bass, 0x38
+// trumpet, 0x47 clarinet). The
+// 13-byte body does not fit the MA-2 operator layout or the OPL and OPLL
+// register images: under each of them most of the 42 distinct corpus voices
+// get a carrier attack rate of 0-3, a near-silent attack no title would ship.
+// Only 16 corpus titles carry the form, so it stays on the GM fallback until
+// its layout can be confirmed instead of guessed.
 func parseSMAFVoice(data []byte) smafParsedVoice {
 	voice := smafParsedVoice{patch: defaultSMAFPatch()}
 	if len(data) < 5 || data[0] != 0x43 {
