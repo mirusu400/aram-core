@@ -82,6 +82,9 @@ func (decoder *smafDecoder) decodeExclusive(data []byte, base, count int, at uin
 		decoder.addEvent(smafEvent{sample: at, kind: smafMasterVolumeChange, channel: base, a: volume})
 		return
 	}
+	if smafMA3ChannelTuning(data) {
+		return
+	}
 	if voice := parseSMAFVoice(data); voice.valid {
 		if !timed {
 			decoder.setVoice(voice)
@@ -161,4 +164,17 @@ func (volume smafMasterVolume) gain() float64 {
 		return 1
 	}
 	return float64(volume.value) / 127
+}
+
+// smafMA3ChannelTuning recognises 43 79 06|07 7F 0B <channel> <parameter>
+// <value>, a per-channel MA-3/MA-5 setting 83 corpus titles send mid-sequence.
+// Its value is the neutral 0x40 in all but three of the 553 corpus messages
+// (parameters 0, 1 and 2, centred like the GM tuning parameters), and nothing
+// in the corpus or the reference players pins down what a non-neutral value
+// does. It is consumed without effect rather than guessed at: a wrong reading
+// of a tuning value is exactly the kind of off-key note the pitch-bend
+// sensitivity fix removed.
+func smafMA3ChannelTuning(data []byte) bool {
+	return len(data) == 8 && data[0] == 0x43 && data[1] == 0x79 &&
+		(data[2] == 6 || data[2] == 7) && data[3] == 0x7f && data[4] == 0x0b
 }
