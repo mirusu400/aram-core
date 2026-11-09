@@ -126,6 +126,7 @@ func (decoder *smafDecoder) startDirectVoice(event smafEvent) {
 	voice.noteID = event.noteID
 	voice.volume = channel.volume * channel.expression
 	voice.noteOn(patch, frequency, 1)
+	voice.setModulation(channel.modulation)
 	voice.pan = channel.pan
 	if patch.panFixed {
 		voice.pan = patch.panDefault

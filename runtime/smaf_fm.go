@@ -353,6 +353,7 @@ type smafOperator struct {
 	totalGain, keyGain    float64
 	keyScaleNumber        int
 	vibrato, tremolo      float64
+	patchVibrato          float64 // the patch's own depth, before channel modulation
 	nyquistMuted          bool
 }
 
@@ -374,6 +375,7 @@ func (operator *smafOperator) configure(
 	} else {
 		operator.vibrato = 0
 	}
+	operator.patchVibrato = operator.vibrato
 	if patch.am {
 		operator.tremolo = tremoloDepth[patch.dam&3]
 	} else {
@@ -805,6 +807,29 @@ func (voice *smafVoice) releasePedal() {
 		return
 	}
 	voice.noteOff()
+}
+
+// smafModulationVibratoDepth is the vibrato a channel at full modulation adds
+// to every operator: the deepest depth the chip's own per-operator vibrato
+// (DVB 3) offers, about 27 cents, on the voice's LFO.
+const smafModulationVibratoDepth = 0.01548
+
+// setModulation applies the channel's modulation (0-1) as vibrato on top of
+// whatever vibrato the patch itself carries.
+func (voice *smafVoice) setModulation(modulation float64) {
+	count := 2
+	if voice.patch.fourOp {
+		count = 4
+	}
+	depth := modulation * smafModulationVibratoDepth
+	voice.usesLFO = false
+	for index := 0; index < count; index++ {
+		operator := &voice.operators[index]
+		operator.vibrato = operator.patchVibrato + depth
+		if operator.vibrato != 0 || operator.tremolo != 0 {
+			voice.usesLFO = true
+		}
+	}
 }
 
 func (voice *smafVoice) setFrequency(frequency float64) {

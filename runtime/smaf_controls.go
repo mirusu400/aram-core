@@ -117,6 +117,16 @@ func (decoder *smafDecoder) updateChannelVolume(channel int) {
 	decoder.updatePCMVolume(channel)
 }
 
+func (decoder *smafDecoder) updateChannelModulation(channel int) {
+	modulation := decoder.channels[channel].modulation
+	for index := range decoder.pool {
+		voice := &decoder.pool[index]
+		if voice.active && voice.channel == channel {
+			voice.setModulation(modulation)
+		}
+	}
+}
+
 func (decoder *smafDecoder) updateChannelPitch(channel int) {
 	bend := decoder.channels[channel].bend
 	for index := range decoder.pool {

@@ -810,6 +810,13 @@ func (decoder *smafDecoder) decodeMobile(track smafTrack, base int) {
 	}
 }
 
+// smafHandyPhoneModulation maps the HandyPhone short-form modulation index
+// (class 2) to a modulation depth, per the format's table.
+var smafHandyPhoneModulation = [16]uint8{
+	0, 0x00, 0x08, 0x10, 0x18, 0x20, 0x28, 0x30,
+	0x38, 0x40, 0x48, 0x50, 0x60, 0x70, 0x7f, 0x7f,
+}
+
 func (decoder *smafDecoder) decodeHandyPhone(
 	track smafTrack,
 	base int,
@@ -943,6 +950,11 @@ func (decoder *smafDecoder) decodeHandyPhone(
 					sample: at, kind: smafPitchBend, channel: channel,
 					a: (value*8)<<7 - 8192,
 				})
+			} else if class == 2 {
+				decoder.addEvent(smafEvent{
+					sample: at, kind: smafModulation, channel: channel,
+					a: int(smafHandyPhoneModulation[value]),
+				})
 			}
 			continue
 		}
@@ -1047,6 +1059,7 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 			channel.octaveShift = event.a - 1000
 		} else {
 			channel.modulation = float64(event.a&0x7f) / 127
+			decoder.updateChannelModulation(event.channel)
 		}
 	case smafPitchBend:
 		channel.bendValue = event.a
@@ -1072,6 +1085,7 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		decoder.setHoldPedal(event.channel, false)
 		decoder.updateChannelVolume(event.channel)
 		decoder.updateChannelPitch(event.channel)
+		decoder.updateChannelModulation(event.channel)
 	case smafAllNotesOff:
 		decoder.allNotesOff(event.channel)
 	case smafNoteOff:
@@ -1133,6 +1147,7 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		voice.volume = channel.volume * channel.expression
 		velocity := float64(event.b&0x7f) / 127
 		voice.noteOn(patch, frequency, velocity*velocity)
+		voice.setModulation(channel.modulation)
 		voice.pan = channel.pan
 		if patch.panFixed {
 			voice.pan = patch.panDefault
