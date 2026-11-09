@@ -112,10 +112,7 @@ func (decoder *smafDecoder) updatePCMVolume(channelIndex int) {
 }
 
 // streamGain is the level of the channel's stream audio relative to the
-// master level: half after an MA-5 7F 0B message with a mode other than 2.
+// master level, as its last 7F 0B message set it.
 func (channel *smafChannel) streamGain() float64 {
-	if channel.streamHalf {
-		return 0.5
-	}
-	return 1
+	return channel.streamLevel.gain()
 }

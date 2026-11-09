@@ -85,15 +85,15 @@ func (decoder *smafDecoder) decodeExclusive(data []byte, base, count int, at uin
 		decoder.addEvent(smafEvent{sample: at, kind: smafMasterVolumeChange, channel: base, a: volume})
 		return
 	}
-	if device, channel, mode, ok := parseSMAFStreamGainMode(data); ok {
-		if device != 7 || channel < 1 || base+channel-1 >= len(decoder.channels) {
+	if channel, level, ok := parseSMAFStreamLevel(data); ok {
+		if channel < 1 || base+channel-1 >= len(decoder.channels) {
 			return
 		}
 		if !timed {
-			decoder.channels[base+channel-1].streamHalf = mode != 2
+			decoder.channels[base+channel-1].streamLevel.set(level)
 			return
 		}
-		decoder.addEvent(smafEvent{sample: at, kind: smafStreamGainMode, channel: base + channel - 1, a: mode})
+		decoder.addEvent(smafEvent{sample: at, kind: smafStreamLevelChange, channel: base + channel - 1, a: level})
 		return
 	}
 	if voice := parseSMAFVoice(data); voice.valid {
@@ -182,19 +182,57 @@ func (volume smafMasterVolume) gain() float64 {
 	return scale * scale
 }
 
-// parseSMAFStreamGainMode recognises 43 79 06|07 7F 0B <channel> <mode>
-// <value>, which 83 corpus titles send mid-sequence.
+// smafStreamFullLevel is full scale for a 7F 0B stream level.
+const smafStreamFullLevel = 0x80
+
+// parseSMAFStreamLevel recognises 43 79 06|07 7F 0B <channel> <mode> <value>,
+// the stream audio level of one channel (counted from 1), and returns that
+// level out of smafStreamFullLevel. About 330 corpus scores send it, nearly
+// all as mode 2 or as mode 0 with value 0x40.
 //
-// The SPH-W8300's SMAF library (firmware 0x15c0c58) is the reference. It
-// handles the message for MA-5 scores (device 07) only: the audio slots
-// playing on that channel, counted from 1, are set to the full (vv+1)^2
-// master level when mode is 2 and to half of it otherwise, and the value byte
-// is never read. The MA-3 form (device 06) has no handler there, so it is
-// consumed without effect, as on the handset.
-func parseSMAFStreamGainMode(data []byte) (device, channel, mode int, ok bool) {
+// For MA-5 scores (device 07) the SPH-W8300's SMAF library (firmware
+// 0x15c0c58) is the reference: the channel's audio slots play at the full
+// master level when mode is 2 and at half of it otherwise, and the value byte
+// is never read. That library has no handler for the MA-3 form (device 06);
+// the SPH-E3700's does (firmware 0x29313c). It turns the message into the
+// sound driver's stream-volume command (0x16, beside stream on, off and
+// pairing), passing 0x80 for mode 2, 0xFF for mode 1 and the value byte for
+// any other mode; the value above full scale is held at full here. The two
+// agree on everything the corpus sends: mode 2 is full and mode 0 with 0x40
+// is half.
+func parseSMAFStreamLevel(data []byte) (channel, level int, ok bool) {
 	if len(data) != 8 || data[0] != 0x43 || data[1] != 0x79 ||
 		(data[2] != 6 && data[2] != 7) || data[3] != 0x7f || data[4] != 0x0b {
-		return 0, 0, 0, false
+		return 0, 0, false
 	}
-	return int(data[2]), int(data[5]), int(data[6]), true
+	channel, mode := int(data[5]), int(data[6])
+	switch {
+	case mode == 2:
+		level = smafStreamFullLevel
+	case data[2] == 7:
+		level = smafStreamFullLevel / 2
+	case mode == 1:
+		level = smafStreamFullLevel
+	default:
+		level = min(int(data[7]), smafStreamFullLevel)
+	}
+	return channel, level, true
+}
+
+// smafStreamLevel is a channel's stream audio level from 7F 0B; a channel
+// that never received one plays its stream audio at full level.
+type smafStreamLevel struct {
+	sent  bool
+	value int
+}
+
+func (level *smafStreamLevel) set(value int) {
+	level.sent, level.value = true, value
+}
+
+func (level smafStreamLevel) gain() float64 {
+	if !level.sent {
+		return 1
+	}
+	return float64(level.value) / smafStreamFullLevel
 }

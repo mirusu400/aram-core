@@ -62,8 +62,8 @@ const (
 	smafDirectPitch  // MA-2 register F-Number change while keyed
 	smafDirectKeyOff // MA-2 register key-off
 	smafMasterVolumeChange
-	smafStreamGainMode // MA-5 7F 0B: a = mode, 2 is full level
-	smafVoiceSlot      // MA-2 43 03 91: a = setup voice slot
+	smafStreamLevelChange // 7F 0B: a = stream level out of smafStreamFullLevel
+	smafVoiceSlot         // MA-2 43 03 91: a = setup voice slot
 )
 
 type smafEvent struct {
@@ -82,9 +82,9 @@ type smafChannel struct {
 	bendValue                 int     // last pitch bend, -8192..8191
 	bendSensitivity           smafBendSensitivity
 	rpn                       smafRegisteredParameter
-	streamHalf                bool // MA-5 7F 0B put this channel's stream audio at half level
-	voiceSlot                 int  // MA-2 43 03 91 setup slot + 1; 0 follows the program
-	bankByte                  int  // the bank select as sent, bit 7 (HandyPhone drum bank) included
+	streamLevel               smafStreamLevel // 7F 0B level of this channel's stream audio
+	voiceSlot                 int             // MA-2 43 03 91 setup slot + 1; 0 follows the program
+	bankByte                  int             // the bank select as sent, bit 7 (HandyPhone drum bank) included
 	modulation                float64
 	holdPedal                 bool
 	octaveShift               int
@@ -1180,8 +1180,8 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		decoder.masterVolume.set(event.a)
 	case smafVoiceSlot:
 		channel.voiceSlot = event.a + 1
-	case smafStreamGainMode:
-		channel.streamHalf = event.a != 2
+	case smafStreamLevelChange:
+		channel.streamLevel.set(event.a)
 		decoder.updatePCMVolume(event.channel)
 	case smafDirectKeyOn:
 		decoder.startDirectVoice(event)
