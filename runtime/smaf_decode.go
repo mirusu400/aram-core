@@ -838,6 +838,13 @@ func (decoder *smafDecoder) decodeHandyPhone(
 	defer func() {
 		registers.releaseAll(decoder, base, decoder.sampleAt(milliseconds))
 	}()
+	// A bank select is held until the channel's next program change, as in
+	// MIDI: the bank alone does not change the sound. Three MA-1 scores
+	// select banks 0x7A and 0x7C right after their program changes and never
+	// change program again, so their notes still play the voices those
+	// program changes picked - the only voices an MA-1 chip has.
+	var pendingBank [4]int
+	var bankPending [4]bool
 	for guard := 0; offset < len(data) && guard < 2_000_000 &&
 		len(decoder.events) < maxSMAFEvents; guard++ {
 		duration := readSMAFHPS(data, &offset)
@@ -908,12 +915,19 @@ func (decoder *smafDecoder) decodeHandyPhone(
 				longValue := int(data[offset])
 				offset++
 				kind := smafEventKind(255)
+				part := second >> 6 & 3
 				switch value {
 				case 0:
 					kind = smafProgram
 					longValue &= 0x7f
+					if bankPending[part] {
+						decoder.addEvent(smafEvent{
+							sample: at, kind: smafBankLSB, channel: channel, a: pendingBank[part],
+						})
+						bankPending[part] = false
+					}
 				case 1:
-					kind = smafBankLSB
+					pendingBank[part], bankPending[part] = longValue, true
 				case 2:
 					shift := 0
 					if longValue >= 0x81 && longValue <= 0x84 {

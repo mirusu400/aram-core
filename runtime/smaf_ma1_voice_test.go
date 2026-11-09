@@ -101,6 +101,49 @@ func TestSMAFMA1BasicOctaveRestoresTheWrittenPitch(t *testing.T) {
 	}
 }
 
+// TestSMAFHandyPhoneBankSelectWaitsForAProgramChange pins the MIDI rule for
+// HandyPhone bank select: it takes effect at the channel's next program
+// change. A score that selects bank 0x7A after its program change, and never
+// changes program again, keeps playing the voice that program change picked.
+func TestSMAFHandyPhoneBankSelectWaitsForAProgramChange(t *testing.T) {
+	// ML 2 (x2) carrier under BO 1: the voice sounds an octave above C4,
+	// where the GM fallback would sound at C4.
+	carrier := [4]byte{0x48, 0x03, 0xc0, 0x00}
+	sequence := []byte{
+		0x00, 0x00, 0x30, 0x00, // channel 0 program 0
+		0x00, 0x00, 0x31, 0x7a, // channel 0 bank 0x7A, no program change after it
+		0x00, 0x20, 0x7d, // C4, gate 125 x 4 ms
+		0x80, 0x7a, 0x00, 0x00, 0x00,
+	}
+	trackBody := []byte{0x00, 0x00, 0x02, 0x02, 0x00, 0x00}
+	trackBody = appendSMAFChunk(trackBody, []byte("Mtsu"),
+		smafMA1Definition(0, 0, 0x21, smafMA1SilentModulator, carrier))
+	trackBody = appendSMAFChunk(trackBody, []byte("Mtsq"), sequence)
+	file := appendSMAFChunk(nil, []byte{'M', 'T', 'R', 1}, trackBody)
+	data := make([]byte, 8)
+	copy(data, "MMMD")
+	binary.BigEndian.PutUint32(data[4:], uint32(len(file)))
+	data = append(data, file...)
+	c4 := smafNoteFrequency(60)
+	window := func(frequency float64) float64 {
+		pcm := decodeSMAFPCM16(data, 44_100)
+		if pcm == nil {
+			t.Fatal("score did not decode")
+		}
+		start, end := int(0.1*44_100), int(0.4*44_100)
+		samples := make([]float64, end-start)
+		for frame := range samples {
+			hann := 0.5 - 0.5*math.Cos(2*math.Pi*float64(frame)/float64(len(samples)-1))
+			samples[frame] = hann * float64(pcm.samples[(start+frame)*2]) / 32768
+		}
+		return toneMagnitude(samples, 44_100, frequency)
+	}
+	if fundamental, octave := window(c4), window(2*c4); octave < 4*fundamental {
+		t.Fatalf("bank 0x7A without a program change dropped the defined voice: fundamental %.4f, octave %.4f",
+			fundamental, octave)
+	}
+}
+
 func smafMA1WindowRMS(t *testing.T, data []byte, from, to float64) float64 {
 	t.Helper()
 	pcm := decodeSMAFPCM16(data, 44_100)
