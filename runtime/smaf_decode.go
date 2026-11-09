@@ -53,6 +53,11 @@ const (
 	smafAllSoundOff
 	smafResetControllers
 	smafAllNotesOff
+	smafRPNMSB
+	smafRPNLSB
+	smafNRPNSelect
+	smafDataEntryMSB
+	smafDataEntryLSB
 )
 
 type smafEvent struct {
@@ -67,7 +72,10 @@ type smafEvent struct {
 type smafChannel struct {
 	bankMSB, bankLSB, program int
 	volume, expression, pan   float64
-	bend                      float64
+	bend                      float64 // semitones: bendValue scaled by the sensitivity
+	bendValue                 int     // last pitch bend, -8192..8191
+	bendSensitivity           smafBendSensitivity
+	rpn                       smafRegisteredParameter
 	modulation                float64
 	holdPedal                 bool
 	octaveShift               int
@@ -1027,14 +1035,26 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 			channel.modulation = float64(event.a&0x7f) / 127
 		}
 	case smafPitchBend:
-		channel.bend = float64(event.a) / 8192 * 2
+		channel.bendValue = event.a
+		channel.applyBend()
 		decoder.updateChannelPitch(event.channel)
+	case smafRPNMSB, smafRPNLSB, smafNRPNSelect:
+		channel.rpn.selectParameter(event.kind, event.a)
+	case smafDataEntryMSB, smafDataEntryLSB:
+		if channel.rpn.pitchBendSensitivity() {
+			channel.bendSensitivity.set(event.kind == smafDataEntryMSB, event.a)
+			channel.applyBend()
+			decoder.updateChannelPitch(event.channel)
+		}
 	case smafHoldPedal:
 		decoder.setHoldPedal(event.channel, event.a&0x7f >= 64)
 	case smafAllSoundOff:
 		decoder.allSoundOff(event.channel)
 	case smafResetControllers:
-		channel.expression, channel.bend, channel.modulation = 1, 0, 0
+		// Reset All Controllers centres the bend and drops the parameter
+		// selection; the sensitivity a score set stays (GM RP-015).
+		channel.expression, channel.bend, channel.bendValue, channel.modulation = 1, 0, 0, 0
+		channel.rpn.reset()
 		decoder.setHoldPedal(event.channel, false)
 		decoder.updateChannelVolume(event.channel)
 		decoder.updateChannelPitch(event.channel)
