@@ -65,6 +65,9 @@ type smafOpPatch struct {
 	ksl, ksr, wave, dt, fb        uint8
 	dvb, dam                      uint8
 	am, vib, egType, xof, sus     bool
+	// ma1Timing reads ar, dr, sr and rr on the YMU757 (MA-1) scale instead of
+	// the MA-2/MA-3 one: see smafMA1AttackMilliseconds.
+	ma1Timing bool
 }
 
 type smafPatch struct {
@@ -247,35 +250,76 @@ func smafDecayMultiplier(
 	return math.Pow(10, -dbPerSample/10)
 }
 
+// smafMA1AttackMilliseconds is the YMU757 (MA-1) attack time from -48 dB to
+// full level for each AR setting, as the chip's datasheet tabulates it. Its
+// steps double like the MA-2/MA-3 ones but sit about five steps slower: AR 15
+// takes 4.65 ms where the later chips' AR 15 is near instant. The datasheet
+// marks AR 1 "inhibit" and gives AR 0 no time; AR 1 takes AR 2's time here and
+// AR 0 never starts.
+var smafMA1AttackMilliseconds = [16]float64{
+	0, 38081.68, 38081.68, 19040.84, 9520.42, 4760.21, 2380.10, 1190.05,
+	595.03, 297.51, 148.76, 74.38, 37.19, 18.59, 9.30, 4.65,
+}
+
+// smafMA1DecayMilliseconds is the YMU757 decay and release time from full
+// level to -48 dB for each DR or RR setting; 0 never decays.
+var smafMA1DecayMilliseconds = [16]float64{
+	0, 73234, 36617, 18308.50, 9154.25, 4577.12, 2288.56, 1144.25,
+	572.14, 286.07, 143.04, 71.52, 35.76, 17.88, 8.94, 2.23,
+}
+
+func smafMA1AttackStep(rate uint8, sampleRate float64) float64 {
+	milliseconds := smafMA1AttackMilliseconds[rate&15]
+	if milliseconds == 0 {
+		return 0
+	}
+	return 1 / math.Max(1, milliseconds/1000*sampleRate)
+}
+
+func smafMA1DecayMultiplier(rate uint8, sampleRate float64) float64 {
+	milliseconds := smafMA1DecayMilliseconds[rate&15]
+	if milliseconds == 0 {
+		return 1
+	}
+	return math.Pow(10, -48.0/20/(milliseconds/1000*sampleRate))
+}
+
 func (envelope *smafEnvelope) configure(
 	patch smafOpPatch,
 	sampleRate float64,
 	keyScaleNumber int,
 ) {
-	envelope.attackStep = smafAttackStep(
-		patch.ar,
-		patch.ksr,
-		keyScaleNumber,
-		sampleRate,
-	)
-	envelope.decayMultiplier = smafDecayMultiplier(
-		patch.dr,
-		patch.ksr,
-		keyScaleNumber,
-		sampleRate,
-	)
-	envelope.sustainMultiplier = smafDecayMultiplier(
-		patch.sr,
-		patch.ksr,
-		keyScaleNumber,
-		sampleRate,
-	)
-	envelope.releaseMultiplier = smafDecayMultiplier(
-		patch.rr,
-		patch.ksr,
-		keyScaleNumber,
-		sampleRate,
-	)
+	if patch.ma1Timing {
+		envelope.attackStep = smafMA1AttackStep(patch.ar, sampleRate)
+		envelope.decayMultiplier = smafMA1DecayMultiplier(patch.dr, sampleRate)
+		envelope.sustainMultiplier = smafMA1DecayMultiplier(patch.sr, sampleRate)
+		envelope.releaseMultiplier = smafMA1DecayMultiplier(patch.rr, sampleRate)
+	} else {
+		envelope.attackStep = smafAttackStep(
+			patch.ar,
+			patch.ksr,
+			keyScaleNumber,
+			sampleRate,
+		)
+		envelope.decayMultiplier = smafDecayMultiplier(
+			patch.dr,
+			patch.ksr,
+			keyScaleNumber,
+			sampleRate,
+		)
+		envelope.sustainMultiplier = smafDecayMultiplier(
+			patch.sr,
+			patch.ksr,
+			keyScaleNumber,
+			sampleRate,
+		)
+		envelope.releaseMultiplier = smafDecayMultiplier(
+			patch.rr,
+			patch.ksr,
+			keyScaleNumber,
+			sampleRate,
+		)
+	}
 	if patch.sl >= 15 {
 		envelope.sustainLevel = 0
 	} else {

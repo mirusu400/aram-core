@@ -9,27 +9,16 @@ type smafParsedVoice struct {
 	patch smafPatch
 	pcm   *smafPCMPatch
 	valid bool
-	// slot is the HandyPhone setup slot (the index byte of 43 03 <slot>
+	// slot is the HandyPhone setup slot (the index byte of 43 02|03 <slot>
 	// <bank> <program>) the voice was loaded into, for 43 03 91 to select.
 	slot    int
 	hasSlot bool
-	// handyPhone marks the 43 03 form, whose bank byte keeps bit 7.
+	// handyPhone marks the 43 02 and 43 03 forms, whose bank byte keeps bit 7.
 	handyPhone bool
 }
 
 // parseSMAFVoice decodes the voice-definition exclusives the decoder knows:
-// 43 79 06|07 7F 01 (MA-3/MA-5), 43 05 01 and 43 03.
-//
-// The MA-1 setup form 43 02 <slot> <bank> <program> <13 bytes> is ignored,
-// as a handset ignores it. The SPH-W8300's SMAF library accepts voice
-// exclusives by length and maker command only - 0x12 and 0x1C bytes of
-// 43 03, 0x14 and 0x22 of 43 04, 0x16, 0x17 and 0x25 of 43 05 (firmware
-// 0x15ba962 and 0x15bb8d0-0x15bc064) - and has no path for a 0x13-byte
-// 43 02 definition, so the handset plays such a channel on its built-in voice
-// for the program. That is what the decoder does: in all 25 corpus scores
-// every program change names exactly the program byte of one of these voices,
-// and the channel plays gmSMAFPatch's patch for that program (0x24 slap bass,
-// 0x38 trumpet, 0x47 clarinet read as GM).
+// 43 79 06|07 7F 01 (MA-3/MA-5), 43 05 01, 43 03 (MA-2) and 43 02 (MA-1).
 func parseSMAFVoice(data []byte) smafParsedVoice {
 	voice := smafParsedVoice{patch: defaultSMAFPatch()}
 	if len(data) < 5 || data[0] != 0x43 {
@@ -93,6 +82,15 @@ func parseSMAFVoice(data []byte) smafParsedVoice {
 		voice.valid = true
 		return voice
 	}
+	if len(data) >= 5+smafMA1VoiceBytes && data[1] == 0x02 && data[2] < 0x10 {
+		voice.slot, voice.hasSlot = int(data[2]), true
+		voice.handyPhone = true
+		voice.key.bankLSB = int(data[3])
+		voice.key.program = int(data[4])
+		applySMAFMA1Voice(data[5:], &voice.patch)
+		voice.valid = true
+		return voice
+	}
 	if len(data) >= 7 && data[1] == 0x03 {
 		voice.slot, voice.hasSlot = int(data[2]&0x0f), data[2] < 0x10
 		voice.handyPhone = true
@@ -146,6 +144,85 @@ func parseSMAFVoice(data []byte) smafParsedVoice {
 	return voice
 }
 
+// smafBasicOctaveShift is the note shift a voice's two-bit basic octave (BO)
+// asks for: BO 1 plays the written note, BO 0 an octave above, BO 2 and 3 one
+// and two octaves below.
+func smafBasicOctaveShift(value byte) int {
+	return 12 * (1 - int(value&3))
+}
+
+// smafMA1VoiceBytes is the body of an MA-1 voice definition, F0 13 43 02
+// <slot> <bank> <program> <body> F7: a header byte, the two YMU757 operator
+// words and four trailing bytes.
+const smafMA1VoiceBytes = 13
+
+// applySMAFMA1Voice decodes the body of an MA-1 setup voice, 43 02 <slot>
+// <bank> <program> <13 bytes>.
+//
+// After one header byte the body holds the YMU757 (MA-1) timbre registers
+// verbatim: the modulator's two 16-bit words, then the carrier's, big-endian,
+// laid out as the chip's datasheet gives them -
+//
+//	even: ML2-0 VIB EGT SUS RR3-0 DR3-0 AR3-2
+//	odd:  AR1-0 SL3-0 TL5-0 WAV FL2-0
+//
+// The SPH-X4209, an MA-2 handset, pins the layout. Its score streamer
+// (firmware 0x142c34) copies these definitions to the chip byte by byte except
+// for one fix-up of the carrier's EGT bit (payload byte 10, bit 3) and the
+// four RR bits that straddle bytes 10 and 11: a damped carrier (EGT 0) whose
+// RR is 5 or slower is rewritten as sustained with RR 9. That is the MA-1's
+// own damped envelope restated for the MA-2: the YMU757 decays a damped sound
+// from SL at RR and cuts it 286 ms (RR 9) after the note ends. Across the
+// corpus's 29 distinct definitions this reading gives every carrier TL 0 and
+// feedback 0, every sustained instrument EGT 1, and the low two header bits
+// track the carrier's multiple: 0 under each x1/2 bass carrier and 2 under
+// each x2 one, the basic octave the MA-3 voice format also carries, which
+// brings both back to the written pitch.
+//
+// The rest of the header and the four trailing bytes do not map to a YMU757
+// register and are not decoded.
+func applySMAFMA1Voice(body []byte, patch *smafPatch) {
+	patch.noteShift = smafBasicOctaveShift(body[0])
+	patch.algorithm = 0
+	patch.fourOp = false
+	// The YMU757 vibrato runs at 6.4 Hz with a depth of 13.47 cents: LFO 2
+	// (6 Hz) at depth 2 (13.4 cents) on this engine.
+	patch.lfo = 2
+	for index := range 2 {
+		source := body[1+index*4 : 5+index*4]
+		even := uint16(source[0])<<8 | uint16(source[1])
+		odd := uint16(source[2])<<8 | uint16(source[3])
+		operator := &patch.operators[index]
+		*operator = smafOpPatch{
+			multi:     uint8(even >> 13),
+			vib:       even>>12&1 != 0,
+			dvb:       2,
+			dr:        uint8(even >> 2 & 15),
+			ar:        uint8(even&3<<2 | odd>>14),
+			sl:        uint8(odd >> 10 & 15),
+			tl:        uint8(odd >> 4 & 63),
+			wave:      uint8(odd >> 3 & 1),
+			fb:        uint8(odd & 7),
+			egType:    true,
+			ma1Timing: true,
+		}
+		rr := uint8(even >> 6 & 15)
+		damped := even>>11&1 == 0
+		// A sustained sound holds SL until the note ends and then releases at
+		// RR. A damped one decays from SL at RR while the note sounds and is
+		// cut in 286 ms (RR 9) once it ends. SUS slows either release to RR 6.
+		operator.rr = rr
+		if damped {
+			operator.sr = rr
+			operator.rr = 9
+		}
+		if even>>10&1 != 0 {
+			operator.rr = 6
+		}
+	}
+	patch.feedback = patch.operators[0].fb
+}
+
 func applySMAFVM35Voice(
 	body []byte,
 	operatorCount int,
@@ -154,17 +231,7 @@ func applySMAFVM35Voice(
 	if len(body) < 3 {
 		return
 	}
-	basicOctave := int(body[1] & 3)
-	switch basicOctave {
-	case 0:
-		patch.noteShift = 12
-	case 1:
-		patch.noteShift = 0
-	case 2:
-		patch.noteShift = -12
-	default:
-		patch.noteShift = -24
-	}
+	patch.noteShift = smafBasicOctaveShift(body[1])
 	patch.panFixed = body[2]&(1<<5) != 0
 	if patch.panFixed {
 		panpot := int(body[1] >> 3 & 31)
