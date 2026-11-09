@@ -121,7 +121,8 @@ func (decoder *smafDecoder) updateChannelPitch(channel int) {
 	bend := decoder.channels[channel].bend
 	for index := range decoder.pool {
 		voice := &decoder.pool[index]
-		if voice.active && voice.channel == channel {
+		// A register-keyed voice sounds at the F-Number the title wrote.
+		if voice.active && !voice.direct && voice.channel == channel {
 			voice.setFrequency(smafNoteFrequency(voice.note) * math.Pow(2, bend/12))
 		}
 	}

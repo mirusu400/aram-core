@@ -58,6 +58,9 @@ const (
 	smafNRPNSelect
 	smafDataEntryMSB
 	smafDataEntryLSB
+	smafDirectKeyOn  // MA-2 register key-on: a = frequency in mHz
+	smafDirectPitch  // MA-2 register F-Number change while keyed
+	smafDirectKeyOff // MA-2 register key-off
 )
 
 type smafEvent struct {
@@ -815,6 +818,10 @@ func (decoder *smafDecoder) decodeHandyPhone(
 	gateBase := smafTimeBase(track.gateBase)
 	offset := 0
 	milliseconds := 0.0
+	var registers smafMA2Registers
+	defer func() {
+		registers.releaseAll(decoder, base, decoder.sampleAt(milliseconds))
+	}()
 	for guard := 0; offset < len(data) && guard < 2_000_000 &&
 		len(decoder.events) < maxSMAFEvents; guard++ {
 		duration := readSMAFHPS(data, &offset)
@@ -843,7 +850,12 @@ func (decoder *smafDecoder) decodeHandyPhone(
 				if payload[len(payload)-1] == 0xf7 {
 					payload = payload[:len(payload)-1]
 				}
-				decoder.decodeExclusive(payload, base, 4, decoder.sampleAt(milliseconds), true)
+				at := decoder.sampleAt(milliseconds)
+				if !waveMode && registers.write(decoder, payload, base, at) {
+					offset += length
+					continue
+				}
+				decoder.decodeExclusive(payload, base, 4, at, true)
 				offset += length
 				continue
 			}
@@ -1105,17 +1117,7 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 				patch = gmSMAFPatch(channel.program)
 			}
 		}
-		slot := -1
-		for index := range decoder.pool {
-			if !decoder.pool[index].active {
-				slot = index
-				break
-			}
-		}
-		if slot < 0 {
-			slot = decoder.nextVoice % len(decoder.pool)
-			decoder.nextVoice++
-		}
+		slot := decoder.allocateFMVoice()
 		soundingNote := event.a + channel.octaveShift + patch.noteShift
 		frequency := smafNoteFrequency(soundingNote) *
 			math.Pow(2, channel.bend/12)
@@ -1124,6 +1126,7 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		voice.channel = event.channel
 		voice.note = soundingNote
 		voice.keyNote = event.a
+		voice.direct = false
 		voice.noteID = event.noteID
 		voice.volume = channel.volume * channel.expression
 		velocity := float64(event.b&0x7f) / 127
@@ -1132,9 +1135,16 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 		if patch.panFixed {
 			voice.pan = patch.panDefault
 		}
-		if !decoder.voiceListed[slot] {
-			decoder.voiceListed[slot] = true
-			decoder.activeVoices = append(decoder.activeVoices, slot)
+		decoder.listFMVoice(slot)
+	case smafDirectKeyOn:
+		decoder.startDirectVoice(event)
+	case smafDirectPitch:
+		if voice := decoder.directVoice(event); voice != nil {
+			voice.setFrequency(float64(event.a) / 1000)
+		}
+	case smafDirectKeyOff:
+		if voice := decoder.directVoice(event); voice != nil {
+			voice.noteOff()
 		}
 	case smafWaveOn:
 		var wave *smafWave
@@ -1544,4 +1554,23 @@ func inflateSMAFHuffman(data []byte) []byte {
 		output = append(output, byte(node))
 	}
 	return output
+}
+
+// allocateFMVoice returns a free FM voice slot, or steals the oldest one.
+func (decoder *smafDecoder) allocateFMVoice() int {
+	for index := range decoder.pool {
+		if !decoder.pool[index].active {
+			return index
+		}
+	}
+	slot := decoder.nextVoice % len(decoder.pool)
+	decoder.nextVoice++
+	return slot
+}
+
+func (decoder *smafDecoder) listFMVoice(slot int) {
+	if !decoder.voiceListed[slot] {
+		decoder.voiceListed[slot] = true
+		decoder.activeVoices = append(decoder.activeVoices, slot)
+	}
 }

@@ -730,6 +730,7 @@ type smafVoice struct {
 	generation             uint64 // note-on identity for the envelope length probe
 	keyDown                bool
 	heldByPedal            bool
+	direct                 bool // keyed by an MA-2 register write, not a note
 	pan                    float64
 	panGains               smafPanGains
 	// usesLFO records whether any operator this note plays reads the LFO. A
