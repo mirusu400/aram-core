@@ -39,6 +39,25 @@ func (h *Heap) Root() *Heap {
 	return h
 }
 
+// AllocateC serves a title's own malloc-style request (MC_knlAlloc,
+// MC_knlCalloc and their realloc wrapper). It keeps at least one byte after
+// the requested size that belongs to no other block.
+//
+// Allocate packs blocks flush against each other, but a handset's C heap does
+// not: a block header or rounding slack separates two allocations. Titles
+// depend on that without knowing it. A string builder that tests only for room
+// for the next character appends it with sprintf(buf+len, "%c", c), so on an
+// exactly full buffer the terminating NUL lands one byte past the end. Packed
+// flush, that NUL zeroed the low byte of the next object's class-descriptor
+// pointer, and the title's next virtual call on that object jumped into data
+// (issue #577).
+func (h *Heap) AllocateC(size uint32, clearMemory bool) (uint32, error) {
+	if size == ^uint32(0) {
+		return 0, nil
+	}
+	return h.Allocate(size+1, clearMemory)
+}
+
 func (h *Heap) Allocate(size uint32, clearMemory bool) (uint32, error) {
 	h = h.Root()
 	if size == 0 {

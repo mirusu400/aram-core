@@ -19,7 +19,7 @@ func (r *Runtime) dispatchKernel(name string) (guest.WIPIReturn, bool, error) {
 	a0, a1, a2 := args[0], args[1], args[2]
 	switch name {
 	case "MC_knlAlloc", "MC_knlCalloc":
-		address, err := r.Heap.Allocate(a0, name == "MC_knlCalloc")
+		address, err := r.Heap.AllocateC(a0, name == "MC_knlCalloc")
 		return guest.WIPIReturn{Low: address}, true, err
 	case "MC_knlFree":
 		r.Heap.Release(a0)

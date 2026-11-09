@@ -896,7 +896,7 @@ func (r *Runtime) DispatchPrivateImport(
 		}
 		heap := r.Public.Heap.Root()
 		if address == 0 {
-			replacement, allocErr := heap.Allocate(size, false)
+			replacement, allocErr := heap.AllocateC(size, false)
 			return guest.WIPIReturn{Low: replacement}, "RAPTOR.realloc", true, allocErr
 		}
 		if size == 0 {
@@ -907,10 +907,12 @@ func (r *Runtime) DispatchPrivateImport(
 		if !allocated {
 			return guest.WIPIReturn{}, "RAPTOR.realloc", true, nil
 		}
-		if size <= oldSize {
+		// Keep the block only while it still has AllocateC's spare byte
+		// after the requested size.
+		if size < oldSize {
 			return guest.WIPIReturn{Low: address}, "RAPTOR.realloc", true, nil
 		}
-		replacement, err := heap.Allocate(size, false)
+		replacement, err := heap.AllocateC(size, false)
 		if err != nil || replacement == 0 {
 			return guest.WIPIReturn{Low: replacement}, "RAPTOR.realloc", true, err
 		}
