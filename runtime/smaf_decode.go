@@ -84,6 +84,7 @@ type smafChannel struct {
 	rpn                       smafRegisteredParameter
 	streamHalf                bool // MA-5 7F 0B put this channel's stream audio at half level
 	voiceSlot                 int  // MA-2 43 03 91 setup slot + 1; 0 follows the program
+	bankByte                  int  // the bank select as sent, bit 7 (HandyPhone drum bank) included
 	modulation                float64
 	holdPedal                 bool
 	octaveShift               int
@@ -1004,8 +1005,14 @@ func (decoder *smafDecoder) resolveVoice(
 	var melody *smafParsedVoice
 	for index := range decoder.voices {
 		voice := &decoder.voices[index]
+		bank := channel.bankLSB
+		if voice.handyPhone {
+			// A HandyPhone voice keeps its whole bank byte: bank 0x80 (the
+			// drum bank) and bank 0 are different banks.
+			bank = channel.bankByte
+		}
 		if voice.key.bankMSB != channel.bankMSB ||
-			voice.key.bankLSB != channel.bankLSB ||
+			voice.key.bankLSB != bank ||
 			voice.key.program != channel.program {
 			continue
 		}
@@ -1047,6 +1054,7 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 	case smafBankMSB:
 		channel.bankMSB = event.a
 	case smafBankLSB:
+		channel.bankByte = event.a & 0xff
 		channel.bankLSB = event.a & 0x7f
 		channel.drum = event.a&0x80 != 0
 	case smafVolume:

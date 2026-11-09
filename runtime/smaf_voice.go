@@ -13,6 +13,8 @@ type smafParsedVoice struct {
 	// <bank> <program>) the voice was loaded into, for 43 03 91 to select.
 	slot    int
 	hasSlot bool
+	// handyPhone marks the 43 03 form, whose bank byte keeps bit 7.
+	handyPhone bool
 }
 
 // parseSMAFVoice decodes the voice-definition exclusives the decoder knows:
@@ -93,7 +95,8 @@ func parseSMAFVoice(data []byte) smafParsedVoice {
 	}
 	if len(data) >= 7 && data[1] == 0x03 {
 		voice.slot, voice.hasSlot = int(data[2]&0x0f), data[2] < 0x10
-		voice.key.bankLSB = int(data[3] & 0x7f)
+		voice.handyPhone = true
+		voice.key.bankLSB = int(data[3])
 		voice.key.program = int(data[4])
 		body := data[5:]
 		if len(body) < 2 {

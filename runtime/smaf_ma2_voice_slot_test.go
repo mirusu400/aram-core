@@ -10,12 +10,16 @@ import (
 // <program> <body> F7: one silent modulator feeding one sine carrier at the
 // given frequency multiple.
 func smafMA2SetupVoice(slot, program, carrierMultiple byte) []byte {
+	return smafMA2SetupBankVoice(slot, 0, program, carrierMultiple)
+}
+
+func smafMA2SetupBankVoice(slot, bank, program, carrierMultiple byte) []byte {
 	body := []byte{
 		0x00, 0x00, // LFO/feedback/algorithm 0, reserved
 		0x14, 0x00, 0xf0, 0xfc, 0x00, // modulator: multiple 1, sustaining, TL 63 (silent)
 		carrierMultiple<<4 | 0x04, 0x00, 0xf0, 0x00, 0x00, // carrier: AR 15, sustaining, TL 0
 	}
-	payload := append([]byte{0x43, 0x03, slot, 0x00, program}, body...)
+	payload := append([]byte{0x43, 0x03, slot, bank, program}, body...)
 	voice := []byte{0xf0, byte(len(payload) + 1)}
 	voice = append(voice, payload...)
 	return append(voice, 0xf7)
@@ -68,5 +72,30 @@ func TestSMAFMA2VoiceSlotWriteSelectsTheSetupVoice(t *testing.T) {
 	slotted := smafMA2VoiceSlotScore(true)
 	if fundamental, octave := smafMA2Partial(t, slotted, c4), smafMA2Partial(t, slotted, 2*c4); octave < 4*fundamental {
 		t.Fatalf("slot write should switch channel 0 to slot 1's voice an octave up: fundamental %.4f, octave %.4f", fundamental, octave)
+	}
+}
+
+// TestSMAFMA2DrumBankVoiceStaysApartFromBankZero pins the HandyPhone bank
+// byte. Bank 0x80 (bit 7 set, the drum bank) and bank 0 are different banks:
+// a score that defines a voice under each with the same program number must
+// get the one its bank select names, not whichever was defined last.
+func TestSMAFMA2DrumBankVoiceStaysApartFromBankZero(t *testing.T) {
+	setup := append(smafMA2SetupBankVoice(0, 0x80, 5, 2), smafMA2SetupBankVoice(1, 0x00, 5, 1)...)
+	sequence := []byte{
+		0x00, 0x00, 0x31, 0x80, // channel 0 bank select 0x80
+		0x00, 0x00, 0x30, 0x05, // program 5
+		0x00, 0x20, 0x81, 0x7a, 0x81, 0x7a, 0x00, 0x00, 0x00, // C4 for 1 s
+	}
+	trackBody := []byte{0x00, 0x00, 0x02, 0x02, 0x00, 0x00}
+	trackBody = appendSMAFChunk(trackBody, []byte("Mtsu"), setup)
+	trackBody = appendSMAFChunk(trackBody, []byte("Mtsq"), sequence)
+	file := appendSMAFChunk(nil, []byte{'M', 'T', 'R', 1}, trackBody)
+	data := make([]byte, 8)
+	copy(data, "MMMD")
+	binary.BigEndian.PutUint32(data[4:], uint32(len(file)))
+	data = append(data, file...)
+	c4 := smafNoteFrequency(60)
+	if fundamental, octave := smafMA2Partial(t, data, c4), smafMA2Partial(t, data, 2*c4); octave < 4*fundamental {
+		t.Fatalf("bank 0x80 program 5 played bank 0's voice: fundamental %.4f, octave %.4f", fundamental, octave)
 	}
 }
