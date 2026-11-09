@@ -61,6 +61,7 @@ const (
 	smafDirectKeyOn  // MA-2 register key-on: a = frequency in mHz
 	smafDirectPitch  // MA-2 register F-Number change while keyed
 	smafDirectKeyOff // MA-2 register key-off
+	smafMasterVolumeChange
 )
 
 type smafEvent struct {
@@ -104,6 +105,7 @@ type smafDecoder struct {
 	nextVoice    int
 	nextPCM      int
 	timelineEnd  uint64 // declared rest/NOP/end time, independent of voice tails
+	masterVolume smafMasterVolume
 }
 
 type smafPCMVoice struct {
@@ -1136,6 +1138,8 @@ func (decoder *smafDecoder) fire(event smafEvent) {
 			voice.pan = patch.panDefault
 		}
 		decoder.listFMVoice(slot)
+	case smafMasterVolumeChange:
+		decoder.masterVolume.set(event.a)
 	case smafDirectKeyOn:
 		decoder.startDirectVoice(event)
 	case smafDirectPitch:
@@ -1411,7 +1415,8 @@ func (stream *smafRenderStream) render(
 		// can change whether a voice is still sounding, which is all the pass
 		// is looking for.
 		if !silent {
-			output = stream.mixSample(output, left, right)
+			gain := decoder.masterVolume.gain()
+			output = stream.mixSample(output, left*gain, right*gain)
 		}
 		stream.cursor++
 		if stream.eventIndex >= len(decoder.events) && !active &&

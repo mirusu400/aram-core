@@ -74,6 +74,14 @@ func (decoder *smafDecoder) setSampledWave(base, count int, wave smafWave) {
 }
 
 func (decoder *smafDecoder) decodeExclusive(data []byte, base, count int, at uint64, timed bool) {
+	if volume, ok := parseSMAFMasterVolume(data); ok {
+		if !timed {
+			decoder.masterVolume.set(volume)
+			return
+		}
+		decoder.addEvent(smafEvent{sample: at, kind: smafMasterVolumeChange, channel: base, a: volume})
+		return
+	}
 	if voice := parseSMAFVoice(data); voice.valid {
 		if !timed {
 			decoder.setVoice(voice)
@@ -121,4 +129,36 @@ func (decoder *smafDecoder) hasSampledVoices() bool {
 		}
 	}
 	return false
+}
+
+// parseSMAFMasterVolume recognises the MA-3/MA-5 master volume exclusive,
+// 43 79 06|07 7F 00 vv. Titles send it once at the top of a score, with values
+// from 80 to 127 in the corpus, to set that score's level against the rest of
+// the title's sound.
+func parseSMAFMasterVolume(data []byte) (int, bool) {
+	if len(data) != 6 || data[0] != 0x43 || data[1] != 0x79 ||
+		(data[2] != 6 && data[2] != 7) || data[3] != 0x7f || data[4] != 0 ||
+		data[5] > 127 {
+		return 0, false
+	}
+	return int(data[5]), true
+}
+
+// smafMasterVolume scales the whole mix. It uses the same linear law as the
+// channel volume. The zero value is full scale: a score that never sends the
+// message plays exactly as before.
+type smafMasterVolume struct {
+	sent  bool
+	value int
+}
+
+func (volume *smafMasterVolume) set(value int) {
+	volume.sent, volume.value = true, value&0x7f
+}
+
+func (volume smafMasterVolume) gain() float64 {
+	if !volume.sent {
+		return 1
+	}
+	return float64(volume.value) / 127
 }
