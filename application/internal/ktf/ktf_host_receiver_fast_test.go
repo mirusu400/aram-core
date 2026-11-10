@@ -61,6 +61,39 @@ func TestKTFExactHostReceiverAvoidsClassParsing(t *testing.T) {
 	}
 }
 
+func TestKTFStaticHostMethodAvoidsReceiverAndClassParsing(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+	class, err := runtime.EnsureJavaClass("java/lang/Math")
+	check(t, err)
+	descriptor := readU32(t, runtime, class+8)
+	const argument = uint32(0xffffffff)
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, argument))
+	spy := &receiverReadSpy{
+		Backend:    runtime.CPU,
+		receiver:   argument,
+		class:      class,
+		descriptor: descriptor,
+	}
+	runtime.CPU = spy
+	handler := HostJavaMethod("java/lang/Math", "abs", "(I)I")
+	got, err := handler(context.Background(), runtime)
+	check(t, err)
+	if got != 1 {
+		t.Fatalf("Math.abs(-1) = %d, want 1", got)
+	}
+	if spy.headerReads != 0 || spy.metadataReads != 0 {
+		t.Fatalf(
+			"static method: header reads=%d metadata reads=%d",
+			spy.headerReads,
+			spy.metadataReads,
+		)
+	}
+	if runtime.inspectMemo.open {
+		t.Fatal("resolution window remained open after the static handler")
+	}
+}
+
 func TestKTFReceiverHeaderMemoLivesOnlyInsideResolution(t *testing.T) {
 	runtime := newTestRuntime(t)
 	object := allocWords(t, runtime, 2)

@@ -159,7 +159,7 @@ func runCleanupKTFCase(t *testing.T, scenario string, factory func(string, strin
 	check(t, base.WriteRegister(cpu.RegisterLR, 0x12345679))
 	r.JavaReturnHigh = 0xdeadbeef
 	r.traceMode = KTFTraceFull
-	name, descriptor := "abs", "(J)J"
+	className, name, descriptor := "java/lang/Math", "abs", "(J)J"
 	var borrowed *ktfHostCallScope
 	switch scenario {
 	case "int":
@@ -179,8 +179,9 @@ func runCleanupKTFCase(t *testing.T, scenario string, factory func(string, strin
 	case "commit panic":
 		spy.panicCommit = true
 	case "resolution panic":
-		class := newInspectableJavaClass(t, r, "java/lang/Math")
-		r.JavaClasses["java/lang/Math"] = class
+		className, name, descriptor = "java/lang/Long", "longValue", "()J"
+		class := newInspectableJavaClass(t, r, className)
+		r.JavaClasses[className] = class
 		r.hostJavaClass[class] = true
 		spy.panicReadAt = class
 	case "capture error":
@@ -204,7 +205,7 @@ func runCleanupKTFCase(t *testing.T, scenario string, factory func(string, strin
 			}
 		}()
 		var err error
-		outcome.Value, err = factory("java/lang/Math", name, descriptor)(context.Background(), r)
+		outcome.Value, err = factory(className, name, descriptor)(context.Background(), r)
 		if err != nil {
 			outcome.Err = err.Error()
 		}

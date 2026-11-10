@@ -725,7 +725,12 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 	)
 	var detailedTraceCalls uint64
 	declaredClassName := className
-	declaresHostMethod := ktfHostSpecDeclaresJavaMethod(className, name, descriptor)
+	declaredAccess, declaresHostMethod := ktfHostSpecJavaMethodAccess(
+		className,
+		name,
+		descriptor,
+	)
+	declaredStaticMethod := declaresHostMethod && declaredAccess&0x0008 != 0
 	argumentWords := uint32(4)
 	if parameters, ok := ktfJavaParameterWords(descriptor); ok {
 		argumentWords = uint32(min(int(cpu.RegisterR12+1), max(4, parameters+2)))
@@ -758,18 +763,24 @@ func HostJavaMethod(className, name, descriptor string) ktfHostHandler {
 		}()
 		registers := scope.arguments[:cpu.RegisterR12+1]
 		declaredClass := className
-		// Resolving which class owns this call only reads, and it reads the
-		// same classes several times; hold their parses until the resolution
-		// is over. See ktfInspectMemo.
-		runtime.inspectMemo.begin()
-		defer runtime.inspectMemo.reset()
+		// Host-declared static methods have no virtual receiver to repair or
+		// redispatch. Their access is fixed in the host specification, so avoid
+		// re-reading guest class metadata to rediscover it on every bridge call.
+		if !declaredStaticMethod {
+			// Resolving which class owns this call only reads, and it reads the
+			// same classes several times; hold their parses until the resolution
+			// is over. See ktfInspectMemo.
+			runtime.inspectMemo.begin()
+			defer runtime.inspectMemo.reset()
+		}
 		// The common case is an exact host-class receiver calling a method
 		// present in that class's host specification. It cannot need receiver
 		// repair or a guest override, so no class/method parsing is necessary.
 		// Subclasses, unrelated cached stubs and non-spec methods still follow
 		// the full live-metadata resolution below.
-		exactHostReceiver := false
-		if declaresHostMethod && !strings.HasPrefix(name, "<") && registers[1] != 0 {
+		exactHostReceiver := declaredStaticMethod
+		if !declaredStaticMethod && declaresHostMethod &&
+			!strings.HasPrefix(name, "<") && registers[1] != 0 {
 			declaredAddress := runtime.JavaClasses[className]
 			if runtime.hostJavaClass[declaredAddress] {
 				receiverClass, receiverErr := runtime.readHostJavaReceiverClass(registers[1])
