@@ -741,8 +741,10 @@ func TestWIPIRuntimeFlushLcdRedirectsOffscreenBuffer(t *testing.T) {
 	if screen == 0 {
 		t.Fatal("screen framebuffer is null")
 	}
+	// Keep the back buffer shorter than the screen to model a phone-reserved
+	// bottom area that the title does not redraw.
 	offscreen := dispatchPublicAPI(
-		t, runtime, "MC_grpCreateOffScreenFrameBuffer", 16, 12).Low
+		t, runtime, "MC_grpCreateOffScreenFrameBuffer", 16, 10).Low
 	if offscreen == 0 || offscreen == screen {
 		t.Fatalf("offscreen framebuffer = 0x%08x (screen 0x%08x)", offscreen, screen)
 	}
@@ -750,11 +752,14 @@ func TestWIPIRuntimeFlushLcdRedirectsOffscreenBuffer(t *testing.T) {
 	check(t, err)
 	dispatchPublicAPI(t, runtime, "MC_grpInitContext", context)
 	dispatchPublicAPI(t, runtime, "MC_grpSetContext", context, 1, 0x00abcdef)
-	dispatchPublicAPI(t, runtime, "MC_grpFillRect", offscreen, 0, 0, 16, 12, context)
+	dispatchPublicAPI(t, runtime, "MC_grpFillRect", offscreen, 0, 0, 16, 10, context)
 	// Flush the offscreen buffer, not the screen handle.
-	dispatchPublicAPI(t, runtime, "MC_grpFlushLcd", 0, offscreen, 0, 0, 16, 12)
+	dispatchPublicAPI(t, runtime, "MC_grpFlushLcd", 0, offscreen, 0, 0, 16, 10)
 	if got := runtime.Frame.RGBAAt(5, 5); got != (color.RGBA{R: 0xab, G: 0xcd, B: 0xef, A: 0xff}) {
 		t.Fatalf("presented pixel = %#v, want the offscreen fill colour", got)
+	}
+	if got := runtime.Frame.RGBAAt(5, 11); got != (color.RGBA{A: 0xff}) {
+		t.Fatalf("reserved bottom row = %#v, want untouched black", got)
 	}
 	if runtime.Stats.PresentCount != 1 {
 		t.Fatalf("present count = %d", runtime.Stats.PresentCount)

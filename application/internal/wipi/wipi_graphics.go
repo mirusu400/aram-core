@@ -1405,7 +1405,7 @@ func (r *Runtime) present(handle uint32) error {
 	// titles flush the screen handle itself and skip this branch entirely.
 	if r.ScreenHandle != 0 && handle != r.ScreenHandle {
 		if screen, ok := r.Framebuffers[r.ScreenHandle]; ok &&
-			screen.Width == fb.Width && screen.Height == fb.Height &&
+			screen.Width == fb.Width && screen.Height >= fb.Height &&
 			screen.BitsPerPixel == fb.BitsPerPixel {
 			size := uint64(fb.Width) * uint64(fb.Height) * uint64(fb.bytesPerPixel())
 			if size <= uint64(^uint(0)>>1) {
