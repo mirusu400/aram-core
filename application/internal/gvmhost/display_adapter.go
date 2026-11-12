@@ -54,10 +54,13 @@ type DisplayConfig struct {
 	OriginX     int
 	OriginY     int
 	Orientation DisplayOrientation
-	Palette     PaletteMapper
-	Publisher   FramePublisher
-	Text        *shared.Text
-	TextOwner   shared.OwnerID
+	// InitialMapping selects the gamma/remap row in effect before the guest
+	// executes its first mapping-selection opcode.
+	InitialMapping uint8
+	Palette        PaletteMapper
+	Publisher      FramePublisher
+	Text           *shared.Text
+	TextOwner      shared.OwnerID
 }
 
 // DisplayAdapter owns all GVM indexed display state. Its methods are serialized
@@ -82,10 +85,11 @@ type DisplayAdapter struct {
 
 func NewDisplayAdapter(config DisplayConfig) (*DisplayAdapter, error) {
 	if config.Width < 1 || config.Width > 256 || config.Height < 1 || config.Height > 256 ||
-		config.Orientation > DisplayOrientationAlternate || config.Palette == nil || config.Publisher == nil {
+		config.Orientation > DisplayOrientationAlternate || config.InitialMapping > 6 ||
+		config.Palette == nil || config.Publisher == nil {
 		return nil, ErrInvalidDisplayConfig
 	}
-	active, err := config.Palette.Map(0, 0)
+	active, err := config.Palette.Map(config.InitialMapping, 0)
 	if err != nil {
 		return nil, errors.Join(ErrInvalidDisplayConfig, err)
 	}
@@ -95,6 +99,7 @@ func NewDisplayAdapter(config DisplayConfig) (*DisplayAdapter, error) {
 		orientation: config.Orientation,
 		palette:     config.Palette,
 		publisher:   config.Publisher,
+		mapping:     config.InitialMapping,
 		activeColor: active,
 		originX:     config.OriginX,
 		originY:     config.OriginY,

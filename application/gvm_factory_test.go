@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mirusu400/aram-core/application/internal/gvmhost"
 	machinecore "github.com/mirusu400/aram-core/core"
 	"github.com/mirusu400/aram-core/cpu"
 	"github.com/mirusu400/aram-core/loader"
@@ -121,6 +122,18 @@ func TestGVMFactoryAutomaticallySelectsQualifiedOperationalCorpus(t *testing.T) 
 	}
 	if provider.SourceInfo().ProfileID != GVMOperationalProfileID || provider.SourceInfo().Format != string(loader.KindGNEX) {
 		t.Fatalf("automatic source = %+v, provider=%v", provider.SourceInfo(), ok)
+	}
+}
+
+func TestGVMNomCorporaUseAlternatePresentation(t *testing.T) {
+	for _, digest := range []string{GVMNomOperationalSHA256, GVMNomAlternateSHA256} {
+		config, ok := gvmOperationalCorpora[digest]
+		if !ok {
+			t.Fatalf("missing operational configuration for %s", digest)
+		}
+		if config.orientation != gvmhost.DisplayOrientationAlternate {
+			t.Fatalf("orientation for %s = %d, want alternate", digest, config.orientation)
+		}
 	}
 }
 

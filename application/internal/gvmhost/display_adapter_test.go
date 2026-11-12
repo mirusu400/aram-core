@@ -221,6 +221,25 @@ func newTestDisplay(t *testing.T, width, height int, orientation DisplayOrientat
 	return display
 }
 
+func TestDisplayAdapterUsesConfiguredInitialMapping(t *testing.T) {
+	display, err := NewDisplayAdapter(DisplayConfig{
+		Width: 1, Height: 1, InitialMapping: 3,
+		Palette: testPalette{failSelector: -1}, Publisher: new(frameCollector),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state := display.Snapshot(); state.Mapping != 3 {
+		t.Fatalf("initial mapping = %d, want 3", state.Mapping)
+	}
+	if err := display.SelectGVMColor(2); err != nil {
+		t.Fatal(err)
+	}
+	if display.activeColor != 62 {
+		t.Fatalf("active color = %d, want mapping 3 selector 2", display.activeColor)
+	}
+}
+
 func TestDisplayAdapterRejectsInvalidConfigAtomically(t *testing.T) {
 	publisher := &frameCollector{}
 	valid := DisplayConfig{Width: 1, Height: 1, Palette: testPalette{failSelector: -1}, Publisher: publisher}
@@ -230,6 +249,7 @@ func TestDisplayAdapterRejectsInvalidConfigAtomically(t *testing.T) {
 		func(c *DisplayConfig) { c.Height = 0 },
 		func(c *DisplayConfig) { c.Height = 257 },
 		func(c *DisplayConfig) { c.Orientation = 2 },
+		func(c *DisplayConfig) { c.InitialMapping = 7 },
 		func(c *DisplayConfig) { c.Palette = nil },
 		func(c *DisplayConfig) { c.Publisher = nil },
 	} {

@@ -54,8 +54,8 @@ func TestGVMIssue357HackSignMenuStoryAndSelection(t *testing.T) {
 	}
 	step(120)
 	press("select", 10)
-	press("up", 10)
-	const menuHash = "8ff1fe95c753aad04f4d3623046f537d52aac8c67d0d1fb7f69fe2d1a2041833"
+	press("left", 10)
+	const menuHash = "c48b97d09b3cd4d2858d81ba5bc3bd730e2988af733326241f01a7d98b4dd27f"
 	if got := hash(); got != menuHash {
 		t.Fatalf("menu frame = %s, want %s", got, menuHash)
 	}
@@ -66,7 +66,7 @@ func TestGVMIssue357HackSignMenuStoryAndSelection(t *testing.T) {
 	if got := hash(); got != selectionHash {
 		t.Fatalf("post-story selection frame = %s, want %s", got, selectionHash)
 	}
-	press("down", 2)
+	press("right", 2)
 	const movedHash = "db02a1766be69e953b79f400da2143f84a8817aab8690d7c42bd65703d5058b9"
 	if got := hash(); got != movedHash {
 		t.Fatalf("moved selection frame = %s, want %s", got, movedHash)

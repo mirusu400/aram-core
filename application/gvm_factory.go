@@ -61,11 +61,15 @@ const (
 	operationalGVMHeight        = int32(160)
 	defaultGVMBudget            = uint64(1)
 	defaultGVMOperationalBudget = uint64(1_000_000)
+	// SKT gamma level 3 is the neutral handset default. Titles may replace it
+	// through opcode 59 before drawing.
+	operationalGVMInitialMapping = uint8(3)
 )
 
 type gvmOperationalConfig struct {
 	width            int32
 	height           int32
+	orientation      gvmhost.DisplayOrientation
 	northMediaSuffix bool
 	nomMediaTail     bool
 }
@@ -79,16 +83,22 @@ func gvmWith(update func(*gvmOperationalConfig)) gvmOperationalConfig {
 }
 
 var gvmOperationalCorpora = map[string]gvmOperationalConfig{
-	GVMOperationalSHA256:              operationalGVM,
-	GVMHackSignOperationalSHA256:      operationalGVM,
-	GVMRagnarokOperationalSHA256:      operationalGVM,
-	GVMNomOperationalSHA256:           gvmWith(func(c *gvmOperationalConfig) { c.nomMediaTail = true }),
-	GVMFruitOperationalSHA256:         operationalGVM,
-	GVMMashiOperationalSHA256:         operationalGVM,
-	GVMFantasyOperationalSHA256:       operationalGVM,
-	GVMStripOperationalSHA256:         operationalGVM,
-	GVMNorthOperationalSHA256:         gvmWith(func(c *gvmOperationalConfig) { c.northMediaSuffix = true }),
-	GVMNomAlternateSHA256:             gvmWith(func(c *gvmOperationalConfig) { c.nomMediaTail = true }),
+	GVMOperationalSHA256:         operationalGVM,
+	GVMHackSignOperationalSHA256: operationalGVM,
+	GVMRagnarokOperationalSHA256: operationalGVM,
+	GVMNomOperationalSHA256: gvmWith(func(c *gvmOperationalConfig) {
+		c.orientation = gvmhost.DisplayOrientationAlternate
+		c.nomMediaTail = true
+	}),
+	GVMFruitOperationalSHA256:   operationalGVM,
+	GVMMashiOperationalSHA256:   operationalGVM,
+	GVMFantasyOperationalSHA256: operationalGVM,
+	GVMStripOperationalSHA256:   operationalGVM,
+	GVMNorthOperationalSHA256:   gvmWith(func(c *gvmOperationalConfig) { c.northMediaSuffix = true }),
+	GVMNomAlternateSHA256: gvmWith(func(c *gvmOperationalConfig) {
+		c.orientation = gvmhost.DisplayOrientationAlternate
+		c.nomMediaTail = true
+	}),
 	GVMFruitAlternateSHA256:           operationalGVM,
 	GVMFantasyAlternateSHA256:         operationalGVM,
 	GVMNorthAlternateSHA256:           gvmWith(func(c *gvmOperationalConfig) { c.northMediaSuffix = true }),
@@ -378,6 +388,7 @@ type gvmMachine struct {
 	requestIDs             externalRequestSequences
 	width                  int32
 	height                 int32
+	orientation            gvmhost.DisplayOrientation
 	inputDispatches        uint64
 	lastInputCode          uint16
 	lastInputResult        cpu.Result
@@ -457,6 +468,7 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 		operational:      operational,
 		width:            config.width,
 		height:           config.height,
+		orientation:      config.orientation,
 		northMediaSuffix: config.northMediaSuffix,
 		nomMediaTail:     config.nomMediaTail,
 	}
@@ -538,8 +550,9 @@ func (m *gvmMachine) resetVMLocked() error {
 		}
 		display, err = gvmhost.NewDisplayAdapter(gvmhost.DisplayConfig{
 			Width: int(width), Height: int(height),
-			Orientation: gvmhost.DisplayOrientationDefault,
-			Palette:     gvmhost.SKTCompatibilityPalette{}, Publisher: m.frames,
+			Orientation:    m.orientation,
+			InitialMapping: operationalGVMInitialMapping,
+			Palette:        gvmhost.SKTCompatibilityPalette{}, Publisher: m.frames,
 			Text: textServices.Text, TextOwner: 1,
 		})
 		if err != nil {
