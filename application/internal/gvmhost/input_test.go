@@ -40,10 +40,10 @@ func TestSKTDirectGuestCode(t *testing.T) {
 		{profile.KeyClear, 13},
 		// Titles ask for "send키" where code 14 opens their WAP pages.
 		{profile.KeySend, 14},
-		{profile.KeyUp, 16},
-		{profile.KeyDown, 17},
-		{profile.KeyLeft, 18},
-		{profile.KeyRight, 19},
+		{profile.KeyUp, 18},
+		{profile.KeyDown, 19},
+		{profile.KeyLeft, 16},
+		{profile.KeyRight, 17},
 		{profile.KeySelect, 20},
 	}
 	for _, test := range tests {

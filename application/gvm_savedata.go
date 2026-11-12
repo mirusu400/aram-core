@@ -33,7 +33,10 @@ func (m *gvmMachine) ExportSaveData() ([]byte, error) {
 	if m.closed {
 		return nil, cpu.ErrClosed
 	}
-	if !gvmSaveDataStateAllowed(m.state) {
+	// Product hosts flush storage before replacing or suspending a running
+	// title. The machine lock makes this a consistent point-in-time snapshot;
+	// unlike import, export does not mutate guest-visible state.
+	if !gvmSaveDataExportStateAllowed(m.state) {
 		return nil, fmt.Errorf("export GVM save data from %s: %w", m.state, ErrInvalidState)
 	}
 	var output bytes.Buffer
@@ -93,4 +96,8 @@ func gvmSaveDataStateAllowed(state machinecore.State) bool {
 	default:
 		return false
 	}
+}
+
+func gvmSaveDataExportStateAllowed(state machinecore.State) bool {
+	return state == machinecore.StateRunning || gvmSaveDataStateAllowed(state)
 }

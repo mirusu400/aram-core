@@ -492,7 +492,7 @@ func TestGVMOperationalPressDispatch(t *testing.T) {
 		t.Fatalf("directional press: %v", err)
 	}
 	input = machine.GVMInputDispatchDiagnostics()
-	if input.DispatchCount != 2 || input.GuestCode != 16 || input.Result.Instructions == 0 || input.Result.Reason != cpu.StopExited {
+	if input.DispatchCount != 2 || input.GuestCode != 18 || input.Result.Instructions == 0 || input.Result.Reason != cpu.StopExited {
 		t.Fatalf("directional input diagnostics = %+v", input)
 	}
 	if machine.GVMPresentCount() != 3 {

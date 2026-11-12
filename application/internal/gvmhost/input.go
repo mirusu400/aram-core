@@ -15,13 +15,13 @@ func SKTGuestCode(key profile.KeyCode) (uint16, bool) {
 	case profile.KeySend:
 		return 14, true
 	case profile.KeyUp:
-		return 16, true
-	case profile.KeyDown:
-		return 17, true
-	case profile.KeyLeft:
 		return 18, true
-	case profile.KeyRight:
+	case profile.KeyDown:
 		return 19, true
+	case profile.KeyLeft:
+		return 16, true
+	case profile.KeyRight:
+		return 17, true
 	case profile.KeySelect:
 		return 20, true
 	default:

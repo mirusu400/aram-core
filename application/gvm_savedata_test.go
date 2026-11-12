@@ -72,8 +72,12 @@ func TestGVMSaveDataHonorsLifecycleBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	machine.state = machinecore.StateRunning
-	if _, err := machine.ExportSaveData(); !errors.Is(err, ErrInvalidState) {
-		t.Fatalf("running export error = %v", err)
+	runningSaved, err := machine.ExportSaveData()
+	if err != nil {
+		t.Fatalf("running export: %v", err)
+	}
+	if !bytes.Equal(runningSaved, saved) {
+		t.Fatal("running export differs from the same ready-state snapshot")
 	}
 	if err := machine.ImportSaveData(saved); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("running import error = %v", err)
