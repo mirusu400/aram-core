@@ -119,6 +119,7 @@ type VM struct {
 	ScreenHeight     int
 	displayReference uint32
 	currentDisplay   uint32
+	activeTextInput  uint32
 	properties       map[string]string
 	screenGraphics   uint32
 	services         *shared.Services
@@ -963,6 +964,9 @@ func (vm *VM) KeyEvent(ctx context.Context, key int32, pressed bool) error {
 	vm.hostStatic[gameCanvasHeldKeys] = IntValue(held)
 	if vm.currentDisplay == 0 {
 		return fmt.Errorf("SKVM has no current Displayable")
+	}
+	if handled, err := vm.dispatchLGTTextInput(ctx, key, pressed); handled || err != nil {
+		return err
 	}
 	method := "keyReleased"
 	if pressed {

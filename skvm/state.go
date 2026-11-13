@@ -846,6 +846,7 @@ func (vm *VM) buildCandidate(
 	for reference, object := range candidate.heap {
 		candidate.indexThreadObject(reference, object)
 	}
+	candidate.rebuildActiveTextInput()
 	return candidate, nil
 }
 

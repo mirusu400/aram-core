@@ -2,6 +2,7 @@ package skvm
 
 import (
 	"context"
+	"errors"
 	"unicode/utf16"
 
 	"github.com/mirusu400/aram-core/internal/ime"
@@ -95,6 +96,29 @@ func lgtFieldInt(vm *VM, receiver uint32, name string, fallback int32) int32 {
 
 func lgtSetFieldInt(vm *VM, receiver uint32, name string, value int32) error {
 	return setObjectField(vm, receiver, lgtTextPrefix+name, IntValue(value))
+}
+
+// TextInputActive reports whether an LGT TextFieldX currently owns keypad
+// input. The reference is derived state: setFocus updates it live and state
+// restore rebuilds it from the serialized TextFieldX focus field.
+func (vm *VM) TextInputActive() bool {
+	if vm == nil || vm.activeTextInput == 0 {
+		return false
+	}
+	_, ok := vm.heap[vm.activeTextInput]
+	return ok && vm.IsInstance(vm.activeTextInput, lgtTextFieldClass) &&
+		lgtFieldInt(vm, vm.activeTextInput, "focus", 0) != 0
+}
+
+func (vm *VM) rebuildActiveTextInput() {
+	vm.activeTextInput = 0
+	for reference := range vm.heap {
+		if vm.IsInstance(reference, lgtTextFieldClass) &&
+			lgtFieldInt(vm, reference, "focus", 0) != 0 {
+			vm.activeTextInput = reference
+			return
+		}
+	}
 }
 
 func lgtSelectedFont(vm *VM, receiver uint32, fallback shared.ServiceID) (shared.ServiceID, error) {
@@ -245,7 +269,15 @@ func (vm *VM) installLGTTextFieldNatives() {
 				automata.Commit()
 				lgtSaveAutomata(vm, receiver, automata)
 			}
-			return Value{}, false, lgtSetFieldInt(vm, receiver, "focus", int32(boolInt(focus != 0)))
+			if err := lgtSetFieldInt(vm, receiver, "focus", int32(boolInt(focus != 0))); err != nil {
+				return Value{}, false, err
+			}
+			if focus != 0 {
+				vm.activeTextInput = receiver
+			} else if vm.activeTextInput == receiver {
+				vm.rebuildActiveTextInput()
+			}
+			return Value{}, false, nil
 		})
 	vm.RegisterNative(lgtTextFieldClass, "hasFocus", "()Z",
 		func(_ context.Context, vm *VM, receiver uint32, _ []Value) (Value, bool, error) {
@@ -417,6 +449,33 @@ func nativeLGTTextKeyPressed(_ context.Context, vm *VM, receiver uint32, args []
 	_ = lgtSetFieldInt(vm, receiver, "mode", mode)
 	lgtSaveAutomata(vm, receiver, automata)
 	return Value{}, false, nil
+}
+
+func lgtTextInputKey(key int32) bool {
+	return key >= '0' && key <= '9' || key == '*' || key == '#'
+}
+
+// dispatchLGTTextInput sends phone-key text entry to the focused TextFieldX.
+// LGT's native control receives these keys before its owner Canvas; function
+// keys still reach the Canvas so the title can accept or cancel the field.
+func (vm *VM) dispatchLGTTextInput(ctx context.Context, key int32, pressed bool) (bool, error) {
+	if !lgtTextInputKey(key) || !vm.TextInputActive() {
+		return false, nil
+	}
+	receiver := vm.activeTextInput
+	method := "keyReleased"
+	if pressed {
+		method = "keyPressed"
+	}
+	_, _, err := vm.InvokeVirtual(ctx, receiver, method, "(I)V", IntValue(key))
+	if errors.Is(err, ErrMethodNotFound) {
+		native := vm.natives[nativeKey{lgtTextFieldClass, method, "(I)V"}]
+		if native == nil {
+			return false, nil
+		}
+		_, _, err = native(ctx, vm, receiver, []Value{IntValue(key)})
+	}
+	return true, vm.absorbUncaught(method, err)
 }
 
 func nativeLGTTextPaint(ctx context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
