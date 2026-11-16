@@ -77,6 +77,7 @@ func TestRaptorFullScreenGeometryRequiresExactPackage(t *testing.T) {
 		{name: "Anima", digest: "3ff5948e235e86e9e6f490666b0389c05a5171aefd36729b73639be138875206", aid: "0003266D"},
 		{name: "Zenonia 1", digest: zenonia1RaptorSHA256, aid: "00027BAA"},
 		{name: "Zenonia 2", digest: zenonia2RaptorSHA256, aid: "0002C004"},
+		{name: "Action Puzzle Family 4", digest: "0b8c8f62e5b6364eca377468087adfdcfe580ea479c373c3e48bbae34bac5888", aid: "000315C6"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			source := machinecore.Source{SHA256: test.digest}

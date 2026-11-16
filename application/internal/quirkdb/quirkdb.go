@@ -561,6 +561,20 @@ var RaptorFramebufferGeometries = []RaptorFramebufferGeometry{
 		FramebufferHeight: 320,
 		PrimaryHeight:     320,
 	},
+	{
+		// 액션퍼즐패밀리4 lays every screen out against the complete 240x320
+		// primary surface. Under the generic 24-pixel client-area origin its
+		// backgrounds started below a blank strip and the bottom row of
+		// characters and soft-key labels fell off the display (issue #587).
+		Key: RaptorTitleKey{
+			PackageSHA256: "0b8c8f62e5b6364eca377468087adfdcfe580ea479c373c3e48bbae34bac5888",
+			AID:           "000315C6",
+			MainClass:     "Clet",
+		},
+		FramebufferWidth:  240,
+		FramebufferHeight: 320,
+		PrimaryHeight:     320,
+	},
 }
 
 // LookupRaptorFramebufferGeometry answers an override only when the exact
