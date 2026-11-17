@@ -42,11 +42,16 @@ func TestScreenPixelGuardPreservesVisibleGeometry(t *testing.T) {
 	check(t, err)
 	screen := runtime.Framebuffers[handle]
 	bytesPerPixel := uint32(screen.BitsPerPixel / 8)
-	wantBytes := uint32(16*(32+24)) * bytesPerPixel
-	if got := runtime.Heap.Allocations[screen.Pixels]; got != wantBytes {
+	// The guard rows sit on both sides of the pixels: a title that clips
+	// against its own idea of the screen may write above the first row as
+	// well as below the last one.
+	guardBytes := uint32(16*24) * bytesPerPixel
+	wantBytes := uint32(16*32)*bytesPerPixel + 2*guardBytes
+	allocation := screen.Pixels - guardBytes
+	if got := runtime.Heap.Allocations[allocation]; got != wantBytes {
 		t.Fatalf("screen allocation = %d bytes, want %d", got, wantBytes)
 	}
-	if handle != screen.Pixels+wantBytes {
+	if handle != allocation+wantBytes {
 		t.Fatalf("screen descriptor = 0x%08x, want after guarded pixels", handle)
 	}
 	if screen.Width != 16 || screen.Height != 32 {

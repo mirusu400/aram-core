@@ -43,7 +43,7 @@ func TestRaptorFramebufferPixelsImportRunsValidDescriptorsInGuest(t *testing.T) 
 	check(t, err)
 	screen := public.Framebuffers[handle]
 	got, result := runRaptorFramebufferPixelsStub(t, runtime, handle)
-	want := screen.Pixels + uint32(raptorScreenOriginY*screen.Width*screen.BitsPerPixel/8)
+	want := screen.Pixels
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.PC != guest.ReturnSentinel+2 {
 		t.Fatalf("screen helper stopped at %#v", result)
 	}
@@ -88,26 +88,28 @@ func TestRaptorFramebufferPixelsImportFallsBackForRawPointers(t *testing.T) {
 	}
 }
 
-func TestRaptorConfiguredPrimaryFramebufferPixelsKeepPhysicalOrigin(t *testing.T) {
+func TestRaptorLegacyScreenOriginShiftsHelperPixels(t *testing.T) {
 	public := newPublicRuntime(t)
 	public.Frame = image.NewRGBA(image.Rect(0, 0, 240, 320))
 	runtime := &Runtime{
-		CPU:                      public.CPU,
-		Public:                   public,
-		primaryFramebufferHeight: 320,
-		importSlotByKey:          make(map[raptorImportKey]uint32),
+		CPU:              public.CPU,
+		Public:           public,
+		screenOriginRows: raptorLegacyScreenOriginY,
+		importSlotByKey:  make(map[raptorImportKey]uint32),
 	}
 	_, err := runtime.resolvedImportStub(raptorFramebufferPixelsImport)
 	check(t, err)
 	handle, err := public.EnsureScreenFramebuffer()
 	check(t, err)
+	screen := public.Framebuffers[handle]
 
 	got, result := runRaptorFramebufferPixelsStub(t, runtime, handle)
 	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.PC != guest.ReturnSentinel+2 {
-		t.Fatalf("configured screen helper stopped at %#v", result)
+		t.Fatalf("legacy screen helper stopped at %#v", result)
 	}
-	if want := public.Framebuffers[handle].Pixels; got != want {
-		t.Fatalf("configured screen helper pixels = 0x%08x, want 0x%08x", got, want)
+	want := screen.Pixels + uint32(raptorLegacyScreenOriginY*screen.Width*screen.BitsPerPixel/8)
+	if got != want {
+		t.Fatalf("legacy screen helper pixels = 0x%08x, want 0x%08x", got, want)
 	}
 }
 

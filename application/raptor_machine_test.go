@@ -294,11 +294,11 @@ func TestRaptorFramebufferImportsExposeLGTGeometry(t *testing.T) {
 		{
 			50,
 			handle,
-			framebuffer.Pixels + uint32(24*framebuffer.Width*framebuffer.BitsPerPixel/8),
+			framebuffer.Pixels,
 			"RAPTOR.grpGetFrameBufferPixels",
 		},
 		{51, handle, uint32(framebuffer.Width), "RAPTOR.grpGetFrameBufferWidth"},
-		{52, handle, uint32(framebuffer.Height - 24), "RAPTOR.grpGetFrameBufferHeight"},
+		{52, handle, uint32(framebuffer.Height), "RAPTOR.grpGetFrameBufferHeight"},
 		{
 			53,
 			handle,
@@ -329,8 +329,8 @@ func TestRaptorFramebufferImportsExposeLGTGeometry(t *testing.T) {
 		}
 	}
 
-	// Only the primary surface has the handset strip. Images and other
-	// offscreen surfaces expose their whole allocation to the same import.
+	// Images and other offscreen surfaces expose their whole allocation to
+	// the same import too.
 	const offscreenHandle = uint32(0x12345678)
 	offscreen := framebuffer
 	offscreen.Handle = offscreenHandle

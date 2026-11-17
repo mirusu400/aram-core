@@ -464,135 +464,73 @@ func LookupRaptorSystemProperties(
 	return nil, false
 }
 
-// RaptorFramebufferGeometry records the physical framebuffer and the value
-// one Raptor package expects from its primary framebuffer-height helper.
-// Offscreen framebuffers always retain their allocated height.
-type RaptorFramebufferGeometry struct {
-	Key               RaptorTitleKey
-	FramebufferWidth  int
-	FramebufferHeight int
-	PrimaryHeight     int
-	// AllowWiderWidth keeps the same vertical screen convention when the
-	// guest framebuffer is widened by the widescreen setting.
+// RaptorLegacyFullSurfaceTitle names a package that ran on the whole 240x320
+// primary surface while other Raptor Clets still drew below a 24-row handset
+// strip. Every Clet has the whole surface now, so the list no longer changes
+// how a title runs. It is kept, and must not grow, because a save state from
+// that period does not record which of the two geometries the Clet had cached.
+type RaptorLegacyFullSurfaceTitle struct {
+	Key RaptorTitleKey
+	// AllowWiderWidth extends the entry to the guest framebuffers widened by
+	// the widescreen setting. The other entries applied at 240 columns only.
 	AllowWiderWidth bool
-	// ScreenPixelGuardRows reserves extra guest memory after the visible screen
-	// for titles that write into the handset strip beyond its last pixel row.
-	ScreenPixelGuardRows int
 }
 
-var RaptorFramebufferGeometries = []RaptorFramebufferGeometry{
-	{
-		// Anima places its dialogue panel at the bottom of the full 240x320
-		// surface. A second handset strip shifts it down and clips its text.
-		Key: RaptorTitleKey{
-			PackageSHA256: "3ff5948e235e86e9e6f490666b0389c05a5171aefd36729b73639be138875206",
-			AID:           "0003266D",
-			MainClass:     "Clet",
-		},
-		FramebufferWidth:  240,
-		FramebufferHeight: 320,
-		PrimaryHeight:     320,
-	},
-	{
-		// MapleStory Thief writes up to 24 rows beyond its 320-row screen.
-		// Reserve those rows so raw guest writes cannot corrupt heap objects.
-		Key: RaptorTitleKey{
-			PackageSHA256: "1eaa92092bee50e2dc2d7649f9d9e60812f22a67371fdec905215bf7e5d38f20",
-			AID:           "0002787C",
-			MainClass:     "Clet",
-		},
-		FramebufferWidth:     240,
-		FramebufferHeight:    320,
-		PrimaryHeight:        320,
-		AllowWiderWidth:      true,
-		ScreenPixelGuardRows: 24,
-	},
-	{
-		// Zenonia 1 draws and lays out its UI against the complete 240x320
-		// primary surface. Applying libwipi's separate 24-pixel handset strip
-		// shifts every layer down and clips the bottom HUD.
-		Key: RaptorTitleKey{
-			PackageSHA256: "3cc7a9b4cb15818cdd5a66f7e520c7b9b36f1df8d2df096aafa961b1cb2b682c",
-			AID:           "00027BAA",
-			MainClass:     "Clet",
-		},
-		FramebufferWidth:  240,
-		FramebufferHeight: 320,
-		PrimaryHeight:     320,
-	},
-	{
-		// Zenonia 2 uses the same full-screen primary-surface convention. Its
-		// dialogue panel reaches the last display rows and is clipped when the
-		// generic 24-pixel client-area origin is imposed.
-		Key: RaptorTitleKey{
-			PackageSHA256: "601556233e719a97860d38f6d413673c2996b1a7010438504663c98b86ec776c",
-			AID:           "0002C004",
-			MainClass:     "Clet",
-		},
-		FramebufferWidth:  240,
-		FramebufferHeight: 320,
-		PrimaryHeight:     320,
-		AllowWiderWidth:   true,
-	},
-	{
-		// 아이뮤지션2 copies and filters the full display-info dimensions
-		// through its raw primary pixels. Moving that pointer below the
-		// handset strip overruns the allocation and corrupts sprite tables.
-		Key: RaptorTitleKey{
-			PackageSHA256: "3ceae1d40ab7c935e7f57d3851c5516dd7295799d202c7d61196566ce30d56bb",
-			AID:           "00032548",
-			MainClass:     "Clet",
-		},
-		FramebufferWidth:  240,
-		FramebufferHeight: 320,
-		PrimaryHeight:     320,
-	},
-	{
-		// 하이브리드2 (Hybrid 2) queries its primary raw framebuffer height,
-		// then adds the drawing context's origin before clipping. On the
-		// verified 240x320 LGT handset image, it therefore requires 320,
-		// unlike titles which use the libwipi 24-pixel client-area contract.
-		Key: RaptorTitleKey{
-			PackageSHA256: "320a5360a0f314d096a9ad3f219114b47d2e4e5a36a30f07c36841f797fbf20a",
-			AID:           "0002E18D",
-			MainClass:     "Clet",
-		},
-		FramebufferWidth:  240,
-		FramebufferHeight: 320,
-		PrimaryHeight:     320,
-	},
-	{
-		// 액션퍼즐패밀리4 lays every screen out against the complete 240x320
-		// primary surface. Under the generic 24-pixel client-area origin its
-		// backgrounds started below a blank strip and the bottom row of
-		// characters and soft-key labels fell off the display (issue #587).
-		Key: RaptorTitleKey{
-			PackageSHA256: "0b8c8f62e5b6364eca377468087adfdcfe580ea479c373c3e48bbae34bac5888",
-			AID:           "000315C6",
-			MainClass:     "Clet",
-		},
-		FramebufferWidth:  240,
-		FramebufferHeight: 320,
-		PrimaryHeight:     320,
-	},
+var RaptorLegacyFullSurfaceTitles = []RaptorLegacyFullSurfaceTitle{
+	{Key: RaptorTitleKey{ // Anima
+		PackageSHA256: "3ff5948e235e86e9e6f490666b0389c05a5171aefd36729b73639be138875206",
+		AID:           "0003266D",
+		MainClass:     "Clet",
+	}},
+	{Key: RaptorTitleKey{ // MapleStory Thief
+		PackageSHA256: "1eaa92092bee50e2dc2d7649f9d9e60812f22a67371fdec905215bf7e5d38f20",
+		AID:           "0002787C",
+		MainClass:     "Clet",
+	}, AllowWiderWidth: true},
+	{Key: RaptorTitleKey{ // Zenonia 1
+		PackageSHA256: "3cc7a9b4cb15818cdd5a66f7e520c7b9b36f1df8d2df096aafa961b1cb2b682c",
+		AID:           "00027BAA",
+		MainClass:     "Clet",
+	}},
+	{Key: RaptorTitleKey{ // Zenonia 2
+		PackageSHA256: "601556233e719a97860d38f6d413673c2996b1a7010438504663c98b86ec776c",
+		AID:           "0002C004",
+		MainClass:     "Clet",
+	}, AllowWiderWidth: true},
+	{Key: RaptorTitleKey{ // 아이뮤지션2
+		PackageSHA256: "3ceae1d40ab7c935e7f57d3851c5516dd7295799d202c7d61196566ce30d56bb",
+		AID:           "00032548",
+		MainClass:     "Clet",
+	}},
+	{Key: RaptorTitleKey{ // 하이브리드2
+		PackageSHA256: "320a5360a0f314d096a9ad3f219114b47d2e4e5a36a30f07c36841f797fbf20a",
+		AID:           "0002E18D",
+		MainClass:     "Clet",
+	}},
+	{Key: RaptorTitleKey{ // 액션퍼즐패밀리4 (issue #587)
+		PackageSHA256: "0b8c8f62e5b6364eca377468087adfdcfe580ea479c373c3e48bbae34bac5888",
+		AID:           "000315C6",
+		MainClass:     "Clet",
+	}},
 }
 
-// LookupRaptorFramebufferGeometry answers an override only when the exact
-// package and the physical framebuffer height agree. A title may opt in to
-// wider guest surfaces without changing its vertical screen convention.
-func LookupRaptorFramebufferGeometry(
+// RaptorLegacyFullSurface reports whether a save state of this exact package,
+// written before Raptor states recorded their screen origin, used the whole
+// primary surface at the given framebuffer size.
+func RaptorLegacyFullSurface(
 	packageSHA256, aid, mainClass string,
 	framebufferWidth, framebufferHeight int,
-) (RaptorFramebufferGeometry, bool) {
-	for _, entry := range RaptorFramebufferGeometries {
+) bool {
+	if framebufferHeight != 320 {
+		return false
+	}
+	for _, entry := range RaptorLegacyFullSurfaceTitles {
 		if entry.Key.Matches(packageSHA256, aid, mainClass) &&
-			(entry.FramebufferWidth == framebufferWidth ||
-				entry.AllowWiderWidth && framebufferWidth > entry.FramebufferWidth) &&
-			entry.FramebufferHeight == framebufferHeight {
-			return entry, true
+			(framebufferWidth == 240 || entry.AllowWiderWidth && framebufferWidth > 240) {
+			return true
 		}
 	}
-	return RaptorFramebufferGeometry{}, false
+	return false
 }
 
 // KTFNativeWidthOnly identifies a verified title whose 240-pixel field renderer

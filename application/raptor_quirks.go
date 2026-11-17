@@ -32,20 +32,13 @@ func raptorRuntimeOptions(
 	); ok {
 		options.SystemProperties = properties
 	}
-	geometry, ok := quirkdb.LookupRaptorFramebufferGeometry(
+	options.LegacyFullSurface = quirkdb.RaptorLegacyFullSurface(
 		source.SHA256,
 		pkg.Descriptor.AID,
 		pkg.Descriptor.MainClass,
 		framebufferSize.X,
 		framebufferSize.Y,
 	)
-	if ok && geometry.PrimaryHeight > 0 &&
-		geometry.PrimaryHeight <= framebufferSize.Y {
-		options.PrimaryFramebufferHeight = geometry.PrimaryHeight
-	}
-	if ok {
-		options.ScreenPixelGuardRows = geometry.ScreenPixelGuardRows
-	}
 	if helper, found := quirkdb.LookupRaptorResourceBytesHelper(
 		source.SHA256,
 		pkg.Descriptor.AID,

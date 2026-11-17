@@ -19,31 +19,6 @@ const zenonia1RaptorSHA256 = "3cc7a9b4cb15818cdd5a66f7e520c7b9b36f1df8d2df096aaf
 const zenonia2RaptorSHA256 = "601556233e719a97860d38f6d413673c2996b1a7010438504663c98b86ec776c"
 const mapleThiefRaptorSHA256 = "1eaa92092bee50e2dc2d7649f9d9e60812f22a67371fdec905215bf7e5d38f20"
 
-func TestMapleThiefScreenPixelGuardRequiresExactPackage(t *testing.T) {
-	source := machinecore.Source{SHA256: mapleThiefRaptorSHA256}
-	pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{AID: "0002787C", MainClass: "Clet"}}
-	for _, width := range []int{240, 640} {
-		options := raptorRuntimeOptions(source, pkg, image.Pt(width, 320))
-		if options.PrimaryFramebufferHeight != 320 || options.ScreenPixelGuardRows != 24 {
-			t.Fatalf("width %d: height=%d guard=%d, want 320 and 24", width, options.PrimaryFramebufferHeight, options.ScreenPixelGuardRows)
-		}
-	}
-	for name, mutate := range map[string]func(*machinecore.Source, *raptorloader.Package, *image.Point){
-		"digest":     func(s *machinecore.Source, _ *raptorloader.Package, _ *image.Point) { s.SHA256 = "0" + s.SHA256[1:] },
-		"aid":        func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) { p.Descriptor.AID = "00000000" },
-		"main class": func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) { p.Descriptor.MainClass = "Other" },
-		"height":     func(_ *machinecore.Source, _ *raptorloader.Package, size *image.Point) { size.Y = 296 },
-	} {
-		t.Run(name, func(t *testing.T) {
-			changedSource, changedPackage, changedSize := source, pkg, image.Pt(640, 320)
-			mutate(&changedSource, &changedPackage, &changedSize)
-			if got := raptorRuntimeOptions(changedSource, changedPackage, changedSize).ScreenPixelGuardRows; got != 0 {
-				t.Fatalf("lookalike screen guard = %d, want 0", got)
-			}
-		})
-	}
-}
-
 func TestRhythmStarRaptorHandsetPropertyRequiresExactPackage(t *testing.T) {
 	pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{
 		AID: "00025DAF", MainClass: "startClet",
@@ -68,125 +43,38 @@ func TestRhythmStarRaptorHandsetPropertyRequiresExactPackage(t *testing.T) {
 	}
 }
 
-func TestRaptorFullScreenGeometryRequiresExactPackage(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		digest string
-		aid    string
-	}{
-		{name: "Anima", digest: "3ff5948e235e86e9e6f490666b0389c05a5171aefd36729b73639be138875206", aid: "0003266D"},
-		{name: "Zenonia 1", digest: zenonia1RaptorSHA256, aid: "00027BAA"},
-		{name: "Zenonia 2", digest: zenonia2RaptorSHA256, aid: "0002C004"},
-		{name: "Action Puzzle Family 4", digest: "0b8c8f62e5b6364eca377468087adfdcfe580ea479c373c3e48bbae34bac5888", aid: "000315C6"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			source := machinecore.Source{SHA256: test.digest}
+// A save state written before Raptor states recorded their screen origin is
+// read as full-surface only for the exact packages that ran that way.
+func TestRaptorLegacyFullSurfaceRequiresExactPackage(t *testing.T) {
+	for _, entry := range quirkdb.RaptorLegacyFullSurfaceTitles {
+		t.Run(entry.Key.AID, func(t *testing.T) {
+			source := machinecore.Source{SHA256: entry.Key.PackageSHA256}
 			pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{
-				AID:       test.aid,
-				MainClass: "Clet",
+				AID: entry.Key.AID, MainClass: entry.Key.MainClass,
 			}}
-			size := image.Pt(240, 320)
-			if got := raptorRuntimeOptions(source, pkg, size).PrimaryFramebufferHeight; got != 320 {
-				t.Fatalf("full-screen framebuffer height = %d, want 320", got)
+			legacy := func(source machinecore.Source, pkg raptorloader.Package, size image.Point) bool {
+				return raptorRuntimeOptions(source, pkg, size).LegacyFullSurface
 			}
-			if test.digest == zenonia2RaptorSHA256 {
-				for _, width := range []int{320, 480} {
-					if got := raptorRuntimeOptions(source, pkg, image.Pt(width, 320)).PrimaryFramebufferHeight; got != 320 {
-						t.Fatalf("widescreen width %d primary height = %d, want 320", width, got)
-					}
-				}
-				if got := raptorRuntimeOptions(source, pkg, image.Pt(239, 320)).PrimaryFramebufferHeight; got != 0 {
-					t.Fatalf("narrow framebuffer primary height = %d, want default", got)
-				}
+			if !legacy(source, pkg, image.Pt(240, 320)) {
+				t.Fatal("exact package at 240x320 was not a legacy full-surface title")
 			}
-
+			if got := legacy(source, pkg, image.Pt(480, 320)); got != entry.AllowWiderWidth {
+				t.Fatalf("widened framebuffer = %t, want %t", got, entry.AllowWiderWidth)
+			}
 			for name, mutate := range map[string]func(*machinecore.Source, *raptorloader.Package, *image.Point){
-				"digest": func(s *machinecore.Source, _ *raptorloader.Package, _ *image.Point) {
-					s.SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
-				},
-				"aid": func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) {
-					p.Descriptor.AID = "00000000"
-				},
-				"main class": func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) {
-					p.Descriptor.MainClass = "OtherClet"
-				},
-				"framebuffer": func(_ *machinecore.Source, _ *raptorloader.Package, s *image.Point) {
-					*s = image.Pt(240, 296)
-				},
+				"digest":     func(s *machinecore.Source, _ *raptorloader.Package, _ *image.Point) { s.SHA256 = "f" + s.SHA256[1:] },
+				"aid":        func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) { p.Descriptor.AID = "00000000" },
+				"main class": func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) { p.Descriptor.MainClass = "Other" },
+				"narrower":   func(_ *machinecore.Source, _ *raptorloader.Package, size *image.Point) { size.X = 239 },
+				"height":     func(_ *machinecore.Source, _ *raptorloader.Package, size *image.Point) { size.Y = 296 },
 			} {
 				t.Run(name, func(t *testing.T) {
-					changedSource, changedPackage, changedSize := source, pkg, size
+					changedSource, changedPackage, changedSize := source, pkg, image.Pt(240, 320)
 					mutate(&changedSource, &changedPackage, &changedSize)
-					if got := raptorRuntimeOptions(changedSource, changedPackage, changedSize).PrimaryFramebufferHeight; got != 0 {
-						t.Fatalf("lookalike framebuffer height = %d, want default", got)
+					if legacy(changedSource, changedPackage, changedSize) {
+						t.Fatal("lookalike was read as a legacy full-surface title")
 					}
 				})
-			}
-		})
-	}
-}
-
-func TestIMusician2RaptorFullScreenGeometryRequiresExactPackage(t *testing.T) {
-	source := machinecore.Source{SHA256: "3ceae1d40ab7c935e7f57d3851c5516dd7295799d202c7d61196566ce30d56bb"}
-	pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{AID: "00032548", MainClass: "Clet"}}
-	size := image.Pt(240, 320)
-	if got := raptorRuntimeOptions(source, pkg, size).PrimaryFramebufferHeight; got != 320 {
-		t.Fatalf("full-screen framebuffer height = %d, want 320", got)
-	}
-	for name, mutate := range map[string]func(*machinecore.Source, *raptorloader.Package, *image.Point){
-		"digest": func(s *machinecore.Source, _ *raptorloader.Package, _ *image.Point) { s.SHA256 = hybrid2RaptorSHA256 },
-		"aid":    func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) { p.Descriptor.AID = "00000000" },
-		"main class": func(_ *machinecore.Source, p *raptorloader.Package, _ *image.Point) {
-			p.Descriptor.MainClass = "OtherClet"
-		},
-		"width":  func(_ *machinecore.Source, _ *raptorloader.Package, s *image.Point) { s.X = 241 },
-		"height": func(_ *machinecore.Source, _ *raptorloader.Package, s *image.Point) { s.Y = 296 },
-	} {
-		t.Run(name, func(t *testing.T) {
-			changedSource, changedPackage, changedSize := source, pkg, size
-			mutate(&changedSource, &changedPackage, &changedSize)
-			if got := raptorRuntimeOptions(changedSource, changedPackage, changedSize).PrimaryFramebufferHeight; got != 0 {
-				t.Fatalf("lookalike framebuffer height = %d, want default", got)
-			}
-		})
-	}
-}
-
-func TestHybrid2RaptorPrimaryFramebufferHeightRequiresExactPackage(t *testing.T) {
-	source := machinecore.Source{SHA256: hybrid2RaptorSHA256}
-	pkg := raptorloader.Package{Descriptor: raptorloader.Descriptor{
-		AID:       "0002E18D",
-		MainClass: "Clet",
-	}}
-	size := image.Pt(240, 320)
-
-	if options := raptorRuntimeOptions(source, pkg, size); options.PrimaryFramebufferHeight != 320 {
-		t.Fatalf("primary framebuffer height = %d, want 320", options.PrimaryFramebufferHeight)
-	}
-
-	for name, mutate := range map[string]func(
-		*machinecore.Source,
-		*raptorloader.Package,
-		*image.Point,
-	){
-		"digest": func(source *machinecore.Source, _ *raptorloader.Package, _ *image.Point) {
-			source.SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
-		},
-		"aid": func(_ *machinecore.Source, pkg *raptorloader.Package, _ *image.Point) {
-			pkg.Descriptor.AID = "00000000"
-		},
-		"main class": func(_ *machinecore.Source, pkg *raptorloader.Package, _ *image.Point) {
-			pkg.Descriptor.MainClass = "OtherClet"
-		},
-		"framebuffer": func(_ *machinecore.Source, _ *raptorloader.Package, size *image.Point) {
-			*size = image.Pt(240, 296)
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			changedSource, changedPackage, changedSize := source, pkg, size
-			mutate(&changedSource, &changedPackage, &changedSize)
-			if options := raptorRuntimeOptions(changedSource, changedPackage, changedSize); options.PrimaryFramebufferHeight != 0 {
-				t.Fatalf("lookalike primary framebuffer height = %d, want default", options.PrimaryFramebufferHeight)
 			}
 		})
 	}

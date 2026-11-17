@@ -217,19 +217,25 @@ func (r *Runtime) newFramebuffer(width, height int, owns bool) (uint32, error) {
 		bytesPerPixel = 4
 	}
 	pixelBytes := uint64(width) * uint64(height) * uint64(bytesPerPixel)
+	// Titles that address the screen's pixels directly clip against their own
+	// idea of the screen, and some of them write a few rows above the first
+	// row or below the last one. The guard rows absorb those writes, which
+	// would otherwise land in whichever heap object happens to be adjacent.
+	guardBytes := uint64(0)
 	if !owns && r.ScreenPixelGuardRows > 0 {
-		pixelBytes += uint64(width) * uint64(min(r.ScreenPixelGuardRows, 4096)) * uint64(bytesPerPixel)
+		guardBytes = uint64(width) * uint64(min(r.ScreenPixelGuardRows, 4096)) * uint64(bytesPerPixel)
 	}
-	if pixelBytes > uint64(guest.HeapSize) {
+	if pixelBytes+2*guardBytes > uint64(guest.HeapSize) {
 		return 0, nil
 	}
-	pixels, err := r.Heap.Allocate(uint32(pixelBytes), true)
-	if err != nil || pixels == 0 {
+	allocation, err := r.Heap.Allocate(uint32(pixelBytes+2*guardBytes), true)
+	if err != nil || allocation == 0 {
 		return 0, err
 	}
+	pixels := allocation + uint32(guardBytes)
 	handle, err := r.Heap.Allocate(wipiFramebufferDescriptorSize, true)
 	if err != nil || handle == 0 {
-		r.Heap.Release(pixels)
+		r.Heap.Release(allocation)
 		return 0, err
 	}
 	values := [...]uint32{

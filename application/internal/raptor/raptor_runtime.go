@@ -85,11 +85,20 @@ const (
 	raptorKeyPressEvent   = uint32(502)
 	raptorKeyReleaseEvent = uint32(503)
 
-	// libwipi places the primary drawable below its 24-pixel handset strip.
-	// Its screen blitters add this origin after clipping against the height
-	// returned by grpGetFrameBufferHeight, so that height is the client area,
-	// not the complete physical allocation. Offscreen buffers have no strip.
-	raptorScreenOriginY = 24
+	// A Clet owns the whole screen: grpGetFrameBufferHeight answers the height
+	// MC_grpGetDisplayInfo reports and the pixel pointer names the first row.
+	// Titles compare the two heights and shift or shorten their own layout by
+	// any difference, so the two must agree (issue #587).
+	//
+	// Clets clip their own raw-pixel blits, and some write up to this many
+	// rows above the first row or below the last one, so the screen's pixels
+	// sit between guard rows of this height.
+	raptorScreenGuardRows = 24
+	// Save states written before Raptor schema 6 ran with the primary surface
+	// starting below a 24-row handset strip, unless the exact package was
+	// listed as a full-surface title. The Clet has cached that geometry, so
+	// such a state keeps it after it is loaded.
+	raptorLegacyScreenOriginY = 24
 
 	StartupFrameLimit = 64
 )
@@ -129,10 +138,13 @@ type Runtime struct {
 	CPU    cpu.Backend
 	Public *wipirt.Runtime
 	Pkg    raptorloader.Package
-	// primaryFramebufferHeight is an exact-package compatibility value for
-	// the physical screen only. A zero value keeps libwipi's client-area
-	// behavior and every offscreen framebuffer uses its allocated height.
-	primaryFramebufferHeight  int
+	// screenOriginRows is nonzero only after loading a save state written
+	// under the handset-strip geometry: the screen's pixel pointer and height
+	// then exclude that many top rows. Offscreen framebuffers are unaffected.
+	screenOriginRows int
+	// legacyScreenOriginRows is the origin a pre-schema-6 state of this
+	// package was saved with.
+	legacyScreenOriginRows    int
 	resourceBytesHelper       uint32
 	imagePatches              []ImagePatch
 	systemProperties          map[string]string
@@ -206,12 +218,10 @@ type Options struct {
 	// SystemProperties overrides device identity for an exact package whose
 	// bundled compatibility table excludes the generic runtime model.
 	SystemProperties map[string]string
-	// PrimaryFramebufferHeight replaces libwipi's primary-screen client
-	// height when positive and no greater than the physical allocation.
-	PrimaryFramebufferHeight int
-	// ScreenPixelGuardRows reserves guest memory after the primary pixel buffer
-	// while retaining its visible dimensions.
-	ScreenPixelGuardRows int
+	// LegacyFullSurface marks an exact package that already ran on the whole
+	// primary surface before that became the behavior of every Clet. It only
+	// selects how a save state from before then is interpreted.
+	LegacyFullSurface bool
 	// ResourceBytesHelper is an exact-title static Thumb function which takes
 	// a Java String in r0 and returns the named packaged resource as byte[].
 	ResourceBytesHelper uint32
@@ -311,7 +321,7 @@ func NewRuntimeWithOptions(
 		Public:                    public,
 		Pkg:                       pkg,
 		Clet:                      clet,
-		primaryFramebufferHeight:  options.PrimaryFramebufferHeight,
+		legacyScreenOriginRows:    raptorLegacyScreenOriginY,
 		resourceBytesHelper:       options.ResourceBytesHelper,
 		imagePatches:              append([]ImagePatch(nil), options.ImagePatches...),
 		systemProperties:          make(map[string]string, len(options.SystemProperties)),
@@ -327,10 +337,10 @@ func NewRuntimeWithOptions(
 	// A Raptor Clet reads its own MC_GrpContext, and LGT's runtime spells the
 	// struct without the SDK's clip_enabled word.
 	public.CompactGraphicsContext = true
-	if options.PrimaryFramebufferHeight == 0 {
-		public.ScreenDrawingOriginY = raptorScreenOriginY
+	if options.LegacyFullSurface {
+		runtime.legacyScreenOriginRows = 0
 	}
-	public.ScreenPixelGuardRows = options.ScreenPixelGuardRows
+	public.ScreenPixelGuardRows = raptorScreenGuardRows
 	// LGT's MC_grpGetDisplayInfo answers the display count, not M_E_SUCCESS.
 	public.DisplayInfoReturnsCount = true
 	public.AllowUnterminatedResourceNames = options.AllowUnterminatedResourceNames
@@ -593,6 +603,15 @@ func (r *Runtime) InstallInterfaces() error {
 	return r.installResourceBytesHelper()
 }
 
+// setScreenOrigin keeps the public drawing calls in the coordinates of the
+// pixel pointer and height the Clet reads through its private imports.
+func (r *Runtime) setScreenOrigin(rows int) {
+	r.screenOriginRows = rows
+	if r.Public != nil {
+		r.Public.ScreenDrawingOriginY = rows
+	}
+}
+
 func (r *Runtime) RestoreImage() error {
 	r.ime = nil
 	if err := r.DestroyRaptorJava(); err != nil {
@@ -617,6 +636,8 @@ func (r *Runtime) RestoreImage() error {
 	}
 	r.ModuleInitialized = false
 	r.Started = false
+	// A restarted Clet reads the screen geometry again.
+	r.setScreenOrigin(0)
 	r.resolvedImports = make(map[raptorImportKey]uint64)
 	r.importSlots = nil
 	r.importSlotByKey = make(map[raptorImportKey]uint32)
@@ -1092,15 +1113,14 @@ func (r *Runtime) DispatchPrivateImport(
 		switch ordinal {
 		case 50:
 			pixels := framebuffer.Pixels
-			// Raw-pixel callers use the same client-area coordinates as the
-			// reported height. Keep their origin below the handset strip too;
-			// otherwise clipped sprites write before the allocation and corrupt
-			// neighboring heap objects, as 놈ZERO did in issue #284.
+			// Raw-pixel callers use the same coordinates as the reported
+			// height. Clipped sprites may still write a few rows before the
+			// first one, as 놈ZERO did in issue #284; the screen's guard rows
+			// take those writes.
 			if framebuffer.Handle == r.Public.ScreenHandle &&
-				r.primaryFramebufferHeight == 0 &&
-				framebuffer.Height > raptorScreenOriginY {
+				framebuffer.Height > r.screenOriginRows {
 				bytesPerPixel := framebuffer.BitsPerPixel / 8
-				pixels += uint32(raptorScreenOriginY * framebuffer.Width * bytesPerPixel)
+				pixels += uint32(r.screenOriginRows * framebuffer.Width * bytesPerPixel)
 			}
 			return guest.WIPIReturn{Low: pixels},
 				"RAPTOR.grpGetFrameBufferPixels", true, nil
@@ -1109,13 +1129,8 @@ func (r *Runtime) DispatchPrivateImport(
 				"RAPTOR.grpGetFrameBufferWidth", true, nil
 		case 52:
 			height := framebuffer.Height
-			if framebuffer.Handle == r.Public.ScreenHandle && height > raptorScreenOriginY {
-				if r.primaryFramebufferHeight > 0 &&
-					r.primaryFramebufferHeight <= height {
-					height = r.primaryFramebufferHeight
-				} else {
-					height -= raptorScreenOriginY
-				}
+			if framebuffer.Handle == r.Public.ScreenHandle && height > r.screenOriginRows {
+				height -= r.screenOriginRows
 			}
 			return guest.WIPIReturn{Low: uint32(height)},
 				"RAPTOR.grpGetFrameBufferHeight", true, nil

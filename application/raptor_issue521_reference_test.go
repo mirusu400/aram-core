@@ -35,7 +35,7 @@ func TestRaptorIssue521OptimizedIntroKeepsOutput(t *testing.T) {
 			t.Fatalf("frame %d: %v", frame, err)
 		}
 	}
-	want := "7e1d0cb31c2b4f303cc8f5faa0482489113e14bfb2ce13c60dc853a3f29396ee"
+	want := "7e65c304a7b56e9718268d9d71cd6c4438685cdaed7193bbac60ce25ca70d5f1"
 	if got := fmt.Sprintf("%x", sha256.Sum256(machine.frame.Pix)); got != want {
 		t.Fatalf("intro frame hash = %s, want %s", got, want)
 	}

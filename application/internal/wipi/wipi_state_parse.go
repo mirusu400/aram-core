@@ -91,7 +91,7 @@ func ParseState(r *Runtime, decoder *guest.StateDecoder) (*SavedState, error) {
 			framebuffer.Width > 4096 || framebuffer.Height > 4096 ||
 			(framebuffer.BitsPerPixel != 16 && framebuffer.BitsPerPixel != 32) ||
 			allocationSizes[framebuffer.Handle] < 24 ||
-			pixelSize > uint64(allocationSizes[framebuffer.Pixels]) {
+			pixelSize > uint64(framebufferPixelRoom(framebuffer, saved.heapAllocations, allocationSizes)) {
 			return nil, decoder.Fail(fmt.Sprintf("invalid public WIPI framebuffer %d", index))
 		}
 		if _, duplicate := seenHandles[framebuffer.Handle]; duplicate {
@@ -709,4 +709,23 @@ func ParseState(r *Runtime, decoder *guest.StateDecoder) (*SavedState, error) {
 		return nil, decoder.Fail(fmt.Sprintf("invalid public WIPI shared Services: %v", err))
 	}
 	return saved, nil
+}
+
+// framebufferPixelRoom returns how many allocated bytes follow a framebuffer's
+// first pixel. Pixels a framebuffer owns start their allocation. The screen's
+// may start inside one, after the guard rows reserved ahead of them.
+func framebufferPixelRoom(
+	framebuffer Framebuffer,
+	allocations []guest.Block,
+	allocationSizes map[uint32]uint32,
+) uint32 {
+	if size, ok := allocationSizes[framebuffer.Pixels]; ok || framebuffer.owns {
+		return size
+	}
+	for _, block := range allocations {
+		if offset := framebuffer.Pixels - block.Address; framebuffer.Pixels > block.Address && offset < block.Size {
+			return block.Size - offset
+		}
+	}
+	return 0
 }

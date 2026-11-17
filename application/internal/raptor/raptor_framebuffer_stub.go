@@ -64,10 +64,7 @@ func (r *Runtime) installStrcmpStub() error {
 }
 
 func (r *Runtime) installFramebufferPixelsStub(hostStub uint32) error {
-	originRows := byte(0)
-	if r.primaryFramebufferHeight == 0 {
-		originRows = raptorScreenOriginY
-	}
+	originRows := byte(r.screenOriginRows)
 	code := raptorFramebufferPixelsCode(hostStub, originRows)
 	if err := r.CPU.WriteMemory(raptorFramebufferPixelsStub, code); err != nil {
 		return fmt.Errorf("install Raptor framebuffer-pixels helper: %w", err)
@@ -84,8 +81,8 @@ func (r *Runtime) installFramebufferPixelsStub(hostStub uint32) error {
 // pixel pointer, or a malformed descriptor branches to the ordinary host stub,
 // preserving the compatibility fallbacks in DispatchPrivateImport. The screen
 // descriptor is the only one that does not own its pixels; its raw pointer is
-// shifted below LGT Raptor's reserved handset strip when that default geometry
-// is active.
+// shifted by originRows, which is nonzero only for a save state written under
+// the former handset-strip geometry.
 func raptorFramebufferPixelsCode(hostStub uint32, originRows byte) []byte {
 	code := []byte{
 		0x00, 0x28, // cmp r0, #0

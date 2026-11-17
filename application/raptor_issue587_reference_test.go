@@ -10,10 +10,12 @@ import (
 	machinecore "github.com/mirusu400/aram-core/core"
 )
 
-// 액션퍼즐패밀리4 lays its screens out against the complete 240x320 primary
-// surface. Under the generic 24-row client-area origin every screen started
-// below a blank strip, and the bottom 24 rows fell off the display: the row of
-// characters and the soft-key labels were cut (issue #587).
+// 액션퍼즐패밀리4 reads both the display height and its primary framebuffer's
+// height, and moves every screen down by the difference. While the framebuffer
+// answered 296 rows of a 320-row display, each screen started below a blank
+// 24-row strip and its last 24 rows fell off the display: the row of
+// characters and the soft-key labels were cut (issue #587). Every Clet gets
+// the whole screen now, so the two heights agree.
 //
 // The opening notice paints a white page over the whole surface. Its first 24
 // rows stayed black before the fix.

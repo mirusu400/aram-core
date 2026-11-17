@@ -9,11 +9,13 @@ import (
 )
 
 const (
-	raptorStateSchemaLegacy     = uint32(2)
-	raptorStateSchemaCallbacks  = uint32(3)
-	raptorStateSchema           = uint32(5)
-	maxRaptorStateSections      = 1024
-	maxRaptorStateCallbackTasks = 1024
+	raptorStateSchemaLegacy    = uint32(2)
+	raptorStateSchemaCallbacks = uint32(3)
+	// Schema 6 records the screen origin, which earlier states implied.
+	raptorStateSchemaScreenOrigin = uint32(6)
+	raptorStateSchema             = raptorStateSchemaScreenOrigin
+	maxRaptorStateSections        = 1024
+	maxRaptorStateCallbackTasks   = 1024
 )
 
 type raptorSectionState struct {
@@ -24,6 +26,7 @@ type raptorSectionState struct {
 type SavedState struct {
 	ModuleInitialized bool
 	Started           bool
+	screenOriginRows  int
 	sections          []raptorSectionState
 	resolvedImports   map[raptorImportKey]uint64
 	importSlots       []raptorImportKey
@@ -67,7 +70,8 @@ func WriteState(r *Runtime, backend cpu.Backend, writer *guest.StateWriter) erro
 	} else {
 		writer.U8(0)
 	}
-	writer.Write([]byte{0, 0})
+	writer.U8(uint8(r.screenOriginRows))
+	writer.U8(0)
 	writer.U32(uint32(len(sections)))
 	for _, section := range sections {
 		writer.U32(section.Address)
@@ -149,7 +153,16 @@ func ParseState(r *Runtime,
 		Started:           decoder.U8() != 0,
 		resolvedImports:   make(map[raptorImportKey]uint64),
 	}
-	decoder.Reserved(2)
+	if schema >= raptorStateSchemaScreenOrigin {
+		state.screenOriginRows = int(decoder.U8())
+		decoder.Reserved(1)
+		if state.screenOriginRows != 0 && state.screenOriginRows != raptorLegacyScreenOriginY {
+			return nil, decoder.Fail("invalid Raptor screen origin")
+		}
+	} else {
+		decoder.Reserved(2)
+		state.screenOriginRows = r.legacyScreenOriginRows
+	}
 	sections := r.Pkg.Image.AllocatedSections()
 	count := decoder.U32()
 	if count != uint32(len(sections)) || count > maxRaptorStateSections {
@@ -271,6 +284,7 @@ func RestoreState(r *Runtime, backend cpu.Backend, state *SavedState) error {
 		}
 	}
 	r.ModuleInitialized = state.ModuleInitialized
+	r.setScreenOrigin(state.screenOriginRows)
 	r.ime = nil
 	if state.ime != nil {
 		copy := *state.ime
