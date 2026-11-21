@@ -89,7 +89,7 @@ func probeSKVMCentredCanvas(
 ) image.Point {
 	ctx, cancel := context.WithTimeout(context.Background(), skvmCanvasProbeBudget)
 	defer cancel()
-	machine, err := newJavaMachine(ctx, source, app, &pkg, canvas, 0, 0, 0, false)
+	machine, err := newJavaMachine(ctx, source, app, &pkg, canvas, 0, 0, 0, false, "")
 	if err != nil {
 		return canvas
 	}

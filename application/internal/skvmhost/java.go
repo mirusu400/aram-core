@@ -32,18 +32,19 @@ var ErrUnsupportedProfile = errors.New("unsupported Java profile")
 
 func NewJ2ME(ctx context.Context, source machinecore.Source, pkg j2me.Package,
 	size image.Point, sampleRate uint32, channels uint8) (*Machine, error) {
-	return NewJ2MEWithGuestWidth(ctx, source, pkg, size, sampleRate, channels, 0)
+	return NewJ2MEWithGuestWidth(ctx, source, pkg, size, sampleRate, channels, 0, "")
 }
 
 // NewJ2MEWithGuestWidth creates a J2ME guest with an optional wider handset canvas.
+// fallbackFont names the handset face for guest text; empty keeps the default.
 func NewJ2MEWithGuestWidth(ctx context.Context, source machinecore.Source, pkg j2me.Package,
-	size image.Point, sampleRate uint32, channels uint8, guestWidthOverride int) (*Machine, error) {
+	size image.Point, sampleRate uint32, channels uint8, guestWidthOverride int, fallbackFont string) (*Machine, error) {
 	if source.ProfileID == j2me.LGTProfileID {
 		size = lgtCanvas(source.SHA256, pkg, size)
 	}
 	return newJavaMachine(ctx, source, Application{MainClass: pkg.Descriptor.MainClass,
 		Properties: pkg.Descriptor.Raw, Classes: pkg.Classes, Resources: pkg.Resources,
-		RecordStores: pkg.RecordStores}, nil, size, sampleRate, channels, guestWidthOverride, false)
+		RecordStores: pkg.RecordStores}, nil, size, sampleRate, channels, guestWidthOverride, false, fallbackFont)
 }
 
 // lgtCanvas picks an LGT MIDlet's canvas: package asset inference first,

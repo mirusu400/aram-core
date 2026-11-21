@@ -68,10 +68,11 @@ func New(
 	outputSampleRate uint32,
 	outputChannels uint8,
 ) (*Machine, error) {
-	return NewWithGuestWidth(ctx, source, pkg, framebufferSize, outputSampleRate, outputChannels, 0)
+	return NewWithGuestWidth(ctx, source, pkg, framebufferSize, outputSampleRate, outputChannels, 0, "")
 }
 
 // NewWithGuestWidth creates an SKVM guest with an optional wider handset canvas.
+// fallbackFont names the handset face for guest text; empty keeps the default.
 func NewWithGuestWidth(
 	ctx context.Context,
 	source machinecore.Source,
@@ -80,21 +81,23 @@ func NewWithGuestWidth(
 	outputSampleRate uint32,
 	outputChannels uint8,
 	guestWidthOverride int,
+	fallbackFont string,
 ) (*Machine, error) {
 	app := Application{MainClass: pkg.Descriptor.MainClass, Properties: pkg.Descriptor.Raw,
 		Classes: make(map[string][]byte, len(pkg.Classes)), Resources: pkg.Resources, RecordStores: pkg.RecordStores}
 	for name, class := range pkg.Classes {
 		app.Classes[name] = class.Data
 	}
-	return newJavaMachine(ctx, source, app, &pkg, framebufferSize, outputSampleRate, outputChannels, guestWidthOverride, true)
+	return newJavaMachine(ctx, source, app, &pkg, framebufferSize, outputSampleRate, outputChannels, guestWidthOverride, true, fallbackFont)
 }
 
 // newJavaMachine creates a Java guest. For an SKT package, probeCanvas lets a
 // throwaway run decide the canvas when nothing in the package names one; the
-// probe's own machine is created with it off.
+// probe's own machine is created with it off. An empty fallbackFont keeps the
+// default handset face.
 func newJavaMachine(ctx context.Context, source machinecore.Source, app Application, legacy *skloader.Package,
 	framebufferSize image.Point, outputSampleRate uint32, outputChannels uint8, guestWidthOverride int,
-	probeCanvas bool) (*Machine, error) {
+	probeCanvas bool, fallbackFont string) (*Machine, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -117,6 +120,9 @@ func newJavaMachine(ctx context.Context, source machinecore.Source, app Applicat
 		size.X = min(guestWidthOverride, 4096)
 	}
 	config := shared.DefaultConfig()
+	if fallbackFont != "" {
+		config.FallbackFont = fallbackFont
+	}
 	if source.ProfileID == j2me.LGTProfileID {
 		if epoch, ok := quirkdb.LookupLGTWallEpoch(source.SHA256, app.MainClass); ok {
 			config.WallEpochMillis = epoch

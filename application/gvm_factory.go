@@ -375,6 +375,7 @@ type gvmMachine struct {
 	budget                 uint64
 	lastResult             cpu.Result
 	operational            bool
+	fallbackFont           string
 	endEntry               uint32
 	eventEntry             uint32
 	inputEntry             uint32
@@ -466,6 +467,7 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 		packageSGS:       bytes.Clone(pkg.SGS),
 		budget:           budget,
 		operational:      operational,
+		fallbackFont:     f.FallbackFont,
 		width:            config.width,
 		height:           config.height,
 		orientation:      config.orientation,
@@ -544,7 +546,11 @@ func (m *gvmMachine) resetVMLocked() error {
 	if m.operational {
 		width, height = m.width, m.height
 		m.frames = new(gvmFramePublisher)
-		textServices, textErr := shared.NewServices(shared.DefaultConfig())
+		textConfig := shared.DefaultConfig()
+		if m.fallbackFont != "" {
+			textConfig.FallbackFont = m.fallbackFont
+		}
+		textServices, textErr := shared.NewServices(textConfig)
 		if textErr != nil {
 			return fmt.Errorf("initialize operational GVM text: %w", textErr)
 		}
