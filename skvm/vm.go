@@ -900,8 +900,8 @@ func (vm *VM) PaintCurrent(ctx context.Context) error {
 		ctx,
 		vm.currentDisplay,
 		"paint",
-		"(Ljavax/microedition/lcdui/Graphics;)V",
-		ReferenceValue(vm.ScreenGraphics()),
+		vm.paintDescriptor(),
+		ReferenceValue(vm.paintGraphics()),
 	)
 	// A paint that throws has still consumed its request, as on a handset:
 	// only a repaint() the title makes again schedules another pass.
@@ -913,7 +913,7 @@ func (vm *VM) PaintCurrent(ctx context.Context) error {
 }
 
 func (vm *VM) paintInFlight() bool {
-	const descriptor = "(Ljavax/microedition/lcdui/Graphics;)V"
+	descriptor := vm.paintDescriptor()
 	containsPaint := func(frames []*frame) bool {
 		for _, current := range frames {
 			if current.method.Name != "paint" || current.method.Descriptor != descriptor || len(current.locals) == 0 {
@@ -968,6 +968,9 @@ func (vm *VM) KeyEvent(ctx context.Context, key int32, pressed bool) error {
 	if handled, err := vm.dispatchLGTTextInput(ctx, key, pressed); handled || err != nil {
 		return err
 	}
+	if vm.currentDisplayIsCard() {
+		return vm.dispatchKWISCardKey(ctx, key, pressed)
+	}
 	method := "keyReleased"
 	if pressed {
 		method = "keyPressed"
@@ -999,6 +1002,10 @@ func (vm *VM) KeyEvent(ctx context.Context, key int32, pressed bool) error {
 func (vm *VM) KeyRepeat(ctx context.Context, key int32) error {
 	if vm.currentDisplay == 0 {
 		return fmt.Errorf("SKVM has no current Displayable")
+	}
+	if vm.currentDisplayIsCard() {
+		// The SKT handset generates no key repeats for a Card.
+		return nil
 	}
 	if vm.IsInstance(vm.currentDisplay, "javax/microedition/lcdui/game/GameCanvas") {
 		object, _ := vm.Object(vm.currentDisplay)
@@ -1126,11 +1133,20 @@ func (vm *VM) Advance(
 		}
 		if event.Kind == shared.EventAudioComplete {
 			for reference, object := range vm.heap {
-				if object.Class != "javax/microedition/media/Player" {
-					continue
-				}
 				clip, ok := object.Native.(*audioClipState)
 				if !ok || clip.clip != event.ServiceID {
+					continue
+				}
+				if object.Class != "javax/microedition/media/Player" {
+					handled, err := vm.notifyKWISClipEnd(ctx, reference, object)
+					if err != nil {
+						if err := vm.absorbUncaught("playUpdate", err); err != nil {
+							return err
+						}
+					}
+					if handled {
+						break
+					}
 					continue
 				}
 				state, _ := object.Fields[playerStateField].Int()

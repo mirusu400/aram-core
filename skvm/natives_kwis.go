@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 func (vm *VM) installKWISNatives() {
@@ -20,43 +18,6 @@ func (vm *VM) installKWISNatives() {
 				0,
 				vm.services.Clock.Monotonic(),
 			)
-		},
-	)
-	vm.RegisterNative(
-		"org/kwis/msp/io/File",
-		"<init>",
-		"(Ljava/lang/String;I)V",
-		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
-			state, err := vm.newXFile(args)
-			if err != nil {
-				return Value{}, false, err
-			}
-			return Value{}, false, vm.setNative(receiver, state)
-		},
-	)
-	vm.RegisterNative(
-		"org/kwis/msp/io/File",
-		"write",
-		"([B)I",
-		func(_ context.Context, vm *VM, receiver uint32, args []Value) (Value, bool, error) {
-			state, err := vm.xFile(receiver)
-			if err != nil {
-				return Value{}, false, err
-			}
-			reference, err := referenceArgument(args, 0)
-			if err != nil {
-				return Value{}, false, err
-			}
-			data, err := vm.ByteArray(reference)
-			if err != nil {
-				return Value{}, false, err
-			}
-			state.data = append(state.data, data...)
-			state.offset = len(state.data)
-			if err := vm.persistXFile(state); err != nil {
-				return Value{}, false, err
-			}
-			return IntValue(int32(len(data))), true, nil
 		},
 	)
 	vm.RegisterNative("org/kwis/msp/io/File", "close", "()V", nativeVoid)
@@ -103,7 +64,6 @@ func (vm *VM) installKWISNatives() {
 	)
 	vm.RegisterNative("org/kwis/msp/lcdui/Jlet", "<init>", "()V", nativeVoid)
 	vm.RegisterNative("org/kwis/msp/lcdui/Jlet", "notifyDestroyed", "()V", nativeVoid)
-	vm.RegisterNative("org/kwis/msp/lcdui/Card", "<init>", "()V", nativeVoid)
 	display := vm.NewObject("org/kwis/msp/lcdui/Display", nil)
 	vm.RegisterStaticField(
 		"org/kwis/msp/lcdui/Display",
@@ -118,18 +78,6 @@ func (vm *VM) installKWISNatives() {
 		func(_ context.Context, _ *VM, _ uint32, _ []Value) (Value, bool, error) {
 			return ReferenceValue(display), true, nil
 		},
-	)
-	vm.RegisterNative(
-		"org/kwis/msp/lcdui/Display",
-		"pushCard",
-		"(Lorg/kwis/msp/lcdui/Card;)V",
-		nativeVoid,
-	)
-	vm.RegisterNative(
-		"org/kwis/msp/lcdui/Card",
-		"repaint",
-		"(IIII)V",
-		nativeVoid,
 	)
 	vm.RegisterNative(
 		"org/kwis/msp/lcdui/Card",
@@ -156,34 +104,6 @@ func (vm *VM) installKWISNatives() {
 				"org/kwis/msp/lcdui/Font",
 				&fontState{font: vm.defaultFont},
 			)), true, nil
-		},
-	)
-	vm.RegisterNative(
-		"org/kwis/msp/io/FileSystem",
-		"isFile",
-		"(Ljava/lang/String;)Z",
-		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
-			name, err := vm.fileNameArgument(args, 0)
-			if err != nil {
-				return Value{}, false, err
-			}
-			_, err = vm.services.Storage.Stat(shared.NamespacePrivate, name)
-			return boolValue(err == nil), true, nil
-		},
-	)
-	vm.RegisterNative(
-		"org/kwis/msp/io/FileSystem",
-		"remove",
-		"(Ljava/lang/String;)V",
-		func(_ context.Context, vm *VM, _ uint32, args []Value) (Value, bool, error) {
-			name, err := vm.fileNameArgument(args, 0)
-			if err != nil {
-				return Value{}, false, err
-			}
-			return Value{}, false, vm.services.Storage.Delete(
-				shared.NamespacePrivate,
-				name,
-			)
 		},
 	)
 	vm.RegisterNative(
@@ -329,6 +249,11 @@ func (vm *VM) installKWISNatives() {
 }
 
 func (vm *VM) installKWISCompatibilityNatives() {
+	vm.installKWISCardNatives()
+	vm.installKWISFileNatives()
+	vm.installKWISFileSystemNatives()
+	vm.installKWISLCDUIExtras()
+	vm.installKWISMediaNatives()
 	vm.RegisterNative(
 		"org/kwis/msp/io/File",
 		"read",

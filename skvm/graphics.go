@@ -35,6 +35,13 @@ func (vm *VM) resetScreenGraphics() error {
 	if err != nil {
 		return err
 	}
+	return vm.resetGraphics(state)
+}
+
+// resetGraphics returns one Graphics to the state it was created in: the
+// whole surface as its clip, no translation, opaque black, the default font,
+// and plain copying.
+func (vm *VM) resetGraphics(state *graphicsState) error {
 	state.font = vm.defaultFont
 	state.color = 0xff000000
 	state.transparency256 = 0
