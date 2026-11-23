@@ -17,6 +17,7 @@ const (
 	dragonKnightEXReportedSKTSHA256 = "78bd51675574314c33f6bf6202752f6fd65df14fc69f94cfef417b4d8045a172"
 	whaleHunting2SKTSHA256          = "1367261bc3ee3b7f0afa102a52a7559204d94da60c543969773d47a09c051e79"
 	xMenSKTSHA256                   = "f483ba078c14a2ea0e19a0cbe28ce36ffe7e16b6afc6847aa67f4a54f66feb72"
+	stoneSkippingIQSKTSHA256        = "4b44b31e81075ed4acf3fc52620ae9898b9715f4fe3942ce4c16c6b773ff873c"
 )
 
 func TestAstoniaEP2MapEdgeQuirkRequiresExactPackage(t *testing.T) {
@@ -177,6 +178,41 @@ func TestXMenCanvasCorrectsTheAmbiguousInference(t *testing.T) {
 	if canvas := skvmTitleCanvas(source, pkg, other); canvas != other {
 		t.Fatalf("canvas from another inference = %v, want the inferred %v", canvas, other)
 	}
+	lookalike := pkg
+	lookalike.Descriptor.ProgramName = "0000000000"
+	if canvas := skvmTitleCanvas(source, lookalike, inferred); canvas != inferred {
+		t.Fatalf("lookalike canvas = %v, want the inferred %v", canvas, inferred)
+	}
+}
+
+// TestStoneSkippingIQCanvasIsItsHandset covers aram-core #589: the title
+// centres its scenes on the canvas but paints the bars over them at a fixed
+// 176 columns from x = 0, so on the 240x320 fallback the two halves of every
+// screen were 32 columns apart.
+func TestStoneSkippingIQCanvasIsItsHandset(t *testing.T) {
+	source := machinecore.Source{SHA256: stoneSkippingIQSKTSHA256}
+	pkg := skloader.Package{Descriptor: skloader.Descriptor{
+		MainClass:   "MyMidlet",
+		ProgramName: "0053630031",
+	}}
+	inferred := image.Pt(240, 320)
+
+	if canvas := skvmTitleCanvas(source, pkg, inferred); canvas != image.Pt(176, 220) {
+		t.Fatalf("canvas = %v, want (176,220)", canvas)
+	}
+	if skvmCanvasNeedsProbe(source, pkg, inferred, inferred) {
+		t.Fatal("a recorded canvas was handed to the probe")
+	}
+	config := shared.DefaultConfig()
+	applySKVMTitleCompatibility(&config, source, pkg, inferred)
+	if len(config.Device.Quirks) != 1 ||
+		config.Device.Quirks[0] != (shared.DeviceQuirk{
+			Name:    skengine.CanvasHeightInset16Quirk,
+			Enabled: true,
+		}) {
+		t.Fatalf("compatibility quirks = %+v", config.Device.Quirks)
+	}
+
 	lookalike := pkg
 	lookalike.Descriptor.ProgramName = "0000000000"
 	if canvas := skvmTitleCanvas(source, lookalike, inferred); canvas != inferred {

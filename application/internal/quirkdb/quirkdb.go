@@ -932,6 +932,27 @@ var SKVMCanvases = []SKVMCanvas{
 		Height:              220,
 		CanvasHeightInset16: true,
 	},
+	{
+		// 물가에돌튕기기IQ builds every image at run time from resource blobs,
+		// so no package asset reveals the handset. It centres each scene on
+		// (getWidth()/2, (getHeight()+16)/2) and then paints the bars over
+		// the scene's top and bottom rows with fillRect(0, 0, 176, 16) and
+		// fillRect(0, getHeight(), 176, 16): fixed at 176 columns from x = 0,
+		// which only lands on the centred scene when the canvas is 176 wide.
+		// The 224-row scenes overhang a 220-row display by the two rows those
+		// bars hide. On the 240x320 fallback the scenes sat 32 columns right
+		// of the bars and menus drawn at fixed positions, and the centred
+		// column probe rightly refused a screen that reaches x = 0
+		// (aram-core #589).
+		Key: SKVMTitleKey{
+			PackageSHA256: "4b44b31e81075ed4acf3fc52620ae9898b9715f4fe3942ce4c16c6b773ff873c",
+			MainClass:     "MyMidlet",
+			ProgramName:   "0053630031",
+		},
+		Width:               176,
+		Height:              220,
+		CanvasHeightInset16: true,
+	},
 }
 
 // LookupSKVMCanvas answers with the recorded canvas for one shipped SKT MIDlet
