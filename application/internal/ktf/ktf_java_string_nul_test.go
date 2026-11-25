@@ -127,3 +127,75 @@ func TestKTFIntegerParseIntAcceptsNULTerminatedToken(t *testing.T) {
 		t.Fatalf("parseInt(16\\0) = %d, want 16", value)
 	}
 }
+
+// TestKTFStringIndexOfNULFindsTerminator is the SBS포트리스2 report
+// (issue #591). The title reads its character, weapon and mode names out of
+// fixed-width NUL-padded fields with
+//
+//	name = new String(buffer, offset, width);
+//	name = name.substring(0, name.indexOf(0));
+//
+// which only works when indexOf(0) answers the end of the text. The handset
+// stops the conversion at the NUL (issue #152), so the terminator a title
+// asks for sits at length(). Answering -1 made substring(0, -1) hand back
+// null for all 86 names and the first battle frame threw a
+// NullPointerException.
+func TestKTFStringIndexOfNULFindsTerminator(t *testing.T) {
+	runtime := newTestRuntime(t)
+	runtime.JvmContext = allocWords(t, runtime, 3+128)
+
+	// "캐롯" in EUC-KR inside a 9-byte name field.
+	field := make([]byte, 9)
+	copy(field, []byte{0xc4, 0xb3, 0xb7, 0xd4})
+	array, err := runtime.NewJavaArray("[B", uint32(len(field)), 1)
+	check(t, err)
+	check(t, runtime.CPU.WriteMemory(readU32(t, runtime, array)+8, field))
+	name, err := runtime.newJavaInstance("java/lang/String", 0)
+	check(t, err)
+	stack := guest.DefaultStackBase + 0x100
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterSP, stack))
+	check(t, runtime.writeWords(stack, []uint32{uint32(len(field))}))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, name))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, array))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, 0))
+	_, err = runtime.handleStringMethod("<init>", "([BII)V")
+	check(t, err)
+
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, name))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
+	end, err := runtime.handleStringMethod("indexOf", "(I)I")
+	check(t, err)
+	if end != 2 {
+		t.Fatalf("indexOf(0) = %d, want the terminator at 2", int32(end))
+	}
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, name))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, 0))
+	check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, end))
+	cut, err := runtime.handleStringMethod("substring", "(II)Ljava/lang/String;")
+	check(t, err)
+	if got := runtime.javaStringValue(cut); cut == 0 || got != "캐롯" {
+		t.Fatalf("substring(0, indexOf(0)) = %q at %#x, want %q", got, cut, "캐롯")
+	}
+
+	// A search that starts past the terminator, and one for any other
+	// character, still misses.
+	for _, probe := range []struct {
+		descriptor   string
+		target, from uint32
+	}{
+		{"(II)I", 0, 3},
+		{"(I)I", 'A', 0},
+	} {
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR1, name))
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR2, probe.target))
+		check(t, runtime.CPU.WriteRegister(cpu.RegisterR3, probe.from))
+		index, indexErr := runtime.handleStringMethod("indexOf", probe.descriptor)
+		check(t, indexErr)
+		if int32(index) != -1 {
+			t.Fatalf(
+				"indexOf%s(%d, %d) = %d, want -1",
+				probe.descriptor, probe.target, probe.from, int32(index),
+			)
+		}
+	}
+}

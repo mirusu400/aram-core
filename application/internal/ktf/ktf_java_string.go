@@ -446,11 +446,16 @@ func (r *Runtime) handleStringMethod(
 			}
 			fromIndex = int(int32(from))
 		}
-		return uint32(int32(indexJavaCodeUnitsFrom(
-			codeUnits,
-			targetUnits,
-			fromIndex,
-		))), nil
+		index := indexJavaCodeUnitsFrom(codeUnits, targetUnits, fromIndex)
+		if index < 0 && target == 0 && fromIndex <= len(codeUnits) {
+			// A handset String ends in a terminator, and a search for
+			// U+0000 finds it there. Titles cut a fixed-width NUL-padded
+			// field with substring(0, indexOf(0)); the conversion already
+			// stopped at that NUL (trimHandsetStringBytes), so the end of
+			// the text is the answer they are asking for (issue #591).
+			index = len(codeUnits)
+		}
+		return uint32(int32(index)), nil
 	case "indexOf(Ljava/lang/String;)I",
 		"indexOf(Ljava/lang/String;I)I":
 		target, valueErr := r.parameter(2)
