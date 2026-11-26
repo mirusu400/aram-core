@@ -60,6 +60,7 @@ type brewMachine struct {
 	persistence       *brewrt.PersistentState
 	hasSaveData       bool
 	fallbackFont      string
+	wallEpochMillis   int64
 	frame             *image.RGBA
 	input             []machinecore.InputEvent
 	heldKeys          map[uint32]brewHeldKey
@@ -117,6 +118,7 @@ func (f Factory) createBREWMachine(ctx context.Context, source machinecore.Sourc
 	}
 	machine := newBREWMachine(source, pkg)
 	machine.fallbackFont = f.FallbackFont
+	machine.wallEpochMillis = f.WallEpochMillis
 	return machine, true, nil
 }
 
@@ -168,6 +170,7 @@ func (m *brewMachine) Start(ctx context.Context) error {
 			m.state = machinecore.StateFaulted
 			return err
 		}
+		runtime.SetWallEpoch(m.wallEpochMillis)
 		m.runtime = runtime
 		m.mediaOutputRevision = runtime.AudioOutputRevision()
 		if m.persistence != nil {

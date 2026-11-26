@@ -84,6 +84,7 @@ func (m *brewMachine) ImportSaveData(data []byte) error {
 		if err != nil {
 			return err
 		}
+		runtime.SetWallEpoch(m.wallEpochMillis)
 	}
 	if err := runtime.RestorePersistentState(envelope.Storage, m.pkg.Files); err != nil {
 		if m.runtime == nil {

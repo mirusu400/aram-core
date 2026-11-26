@@ -1058,6 +1058,25 @@ func TestCommonHelperContracts(t *testing.T) {
 	if got := call(helperGetSecondsSlot, 0, 0, 0); got != 630_720_002 {
 		t.Fatalf("GetSeconds = %d, want deterministic calendar time", got)
 	}
+	// A host-chosen start date replaces the fixed base and keeps running: the
+	// handset's Korean local time is what GETJULIANDATE later breaks down.
+	runtime.SetWallEpoch(time.Date(2026, time.November, 26, 5, 3, 20, 0, time.UTC).UnixMilli())
+	chosen := call(helperGetSecondsSlot, 0, 0, 0)
+	chosenAt := heapBase + 0x700
+	call(helperGetJulianDateSlot, chosen, chosenAt, 0)
+	chosenJulian := make([]byte, 14)
+	if err := runtime.cpu.ReadMemory(chosenAt, chosenJulian); err != nil {
+		t.Fatal(err)
+	}
+	for index, want := range []uint16{2026, 11, 26, 14, 3, 22, 4} {
+		if got := binary.LittleEndian.Uint16(chosenJulian[index*2:]); got != want {
+			t.Fatalf("chosen Julian field %d = %d, want %d", index, got, want)
+		}
+	}
+	runtime.SetWallEpoch(0)
+	if got := call(helperGetSecondsSlot, 0, 0, 0); got != 630_720_002 {
+		t.Fatalf("GetSeconds after clearing the start date = %d", got)
+	}
 	julianAt := heapBase + 0x600
 	call(helperGetJulianDateSlot, 630_720_000, julianAt, 0)
 	julian := make([]byte, 14)

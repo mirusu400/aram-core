@@ -234,6 +234,7 @@ type Runtime struct {
 	lastHostArgs     [4]uint32
 	classIDs         []uint32
 	clock            time.Duration
+	calendarStart    uint32 // host-chosen BREW seconds at clock zero; 0 keeps the default
 	randomState      uint32
 	graphics         graphicsState
 	soundInfo        [5]byte
@@ -1222,10 +1223,10 @@ func (r *Runtime) handleAppletMethodTrap(
 			}
 			return resume()
 		case helperGetSecondsSlot:
-			// BREW calendar seconds use the GPS epoch (1980-01-06). Keep a fixed,
-			// deterministic base and advance it with the cooperative guest clock.
-			const calendarBase = uint32(630_720_000) // 2000-01-01 in BREW seconds.
-			if err := r.cpu.WriteRegister(cpu.RegisterR0, calendarBase+uint32(r.clock/time.Second)); err != nil {
+			// BREW calendar seconds use the GPS epoch (1980-01-06). The base is
+			// fixed unless the host chose a start date, and it advances with the
+			// cooperative guest clock.
+			if err := r.cpu.WriteRegister(cpu.RegisterR0, r.calendarBase()+uint32(r.clock/time.Second)); err != nil {
 				return true, 0, cpu.ModeARM, fmt.Errorf("return BREW calendar seconds: %w", err)
 			}
 			return resume()
@@ -4734,4 +4735,34 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	return r.cpu.Close()
+}
+
+const (
+	// defaultCalendarBase is 2000-01-01 in BREW seconds, the fixed start that
+	// keeps headless runs reproducible.
+	defaultCalendarBase = uint32(630_720_000)
+	// gpsEpochUnixSeconds is 1980-01-06T00:00:00Z, where BREW seconds start.
+	gpsEpochUnixSeconds = int64(315_964_800)
+	// handsetZoneSeconds is the handset's fixed Korean zone. BREW seconds are
+	// local time: GETJULIANDATE breaks them down without a zone.
+	handsetZoneSeconds = int64(9 * 60 * 60)
+)
+
+func (r *Runtime) calendarBase() uint32 {
+	if r.calendarStart != 0 {
+		return r.calendarStart
+	}
+	return defaultCalendarBase
+}
+
+// SetWallEpoch starts the BREW calendar at a host-chosen Unix time in
+// milliseconds. Zero, or a time BREW seconds cannot express, keeps the fixed
+// default.
+func (r *Runtime) SetWallEpoch(epochMillis int64) {
+	seconds := epochMillis/1000 + handsetZoneSeconds - gpsEpochUnixSeconds
+	if epochMillis == 0 || seconds <= 0 || seconds > int64(^uint32(0)>>1) {
+		r.calendarStart = 0
+		return
+	}
+	r.calendarStart = uint32(seconds)
 }
