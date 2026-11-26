@@ -3530,6 +3530,14 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 					WindowID: "external-16bit-bank-1", Offset: 0x00003e4a,
 					Width: Width16, Value: 1,
 				},
+				{
+					// The WCDMA image publishes its own ReadyForCmds byte in
+					// bank 0. wl1m polls it 1000 times after the module loader
+					// reports the download and raises ERR_FATAL if it stays
+					// clear; the downloaded image initialises it to zero.
+					WindowID: "external-16bit-bank-0", Offset: 0x00002c4a,
+					Width: Width16, Value: 1,
+				},
 			},
 			Interrupt: &QualcommADSPInterruptProfile{
 				Source: 33, UseVectoredController: true,

@@ -1065,6 +1065,11 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 					WindowID: "external-16bit-bank-1", Offset: 0x00003e4a,
 					Width: Width16, Value: 1,
 				},
+				{
+					// wl1m's WCDMA ReadyForCmds poll reads bank 0 +0x2c4a.
+					WindowID: "external-16bit-bank-0", Offset: 0x00002c4a,
+					Width: Width16, Value: 1,
+				},
 			},
 			Interrupt: &QualcommADSPInterruptProfile{
 				Source: 33, UseVectoredController: true,
