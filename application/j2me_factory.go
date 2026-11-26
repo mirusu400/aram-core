@@ -52,5 +52,11 @@ func (f Factory) createJ2MEMachine(ctx context.Context, source machinecore.Sourc
 	if errors.Is(err, skvmhost.ErrUnsupportedProfile) {
 		return nil, true, fmt.Errorf("%w: %w", ErrUnsupportedSource, err)
 	}
-	return machine, true, err
+	if err != nil {
+		return nil, true, err
+	}
+	if err := machine.SetWallEpoch(f.WallEpochMillis); err != nil {
+		return nil, true, fmt.Errorf("set J2ME wall clock: %w", err)
+	}
+	return machine, true, nil
 }

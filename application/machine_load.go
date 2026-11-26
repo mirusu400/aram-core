@@ -276,6 +276,9 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 	if err != nil {
 		return fmt.Errorf("initialize public WIPI runtime: %w", err)
 	}
+	if err := publicRuntime.SetWallEpoch(m.wallEpochMillis); err != nil {
+		return fmt.Errorf("initialize public WIPI wall clock: %w", err)
+	}
 	m.wipi = publicRuntime
 	publicRuntime.OfflineCarrierAuth = m.offlineCarrierAuth
 	publicRuntime.InvokeSync = func(
@@ -435,6 +438,9 @@ func (m *Machine) loadRaptor(
 	if err != nil {
 		return fmt.Errorf("initialize public WIPI runtime for Raptor: %w", err)
 	}
+	if err := publicRuntime.SetWallEpoch(m.wallEpochMillis); err != nil {
+		return fmt.Errorf("initialize Raptor wall clock: %w", err)
+	}
 	m.wipi = publicRuntime
 	publicRuntime.OfflineCarrierAuth = m.offlineCarrierAuth
 	publicRuntime.InvokeSync = func(
@@ -562,6 +568,9 @@ func (m *Machine) loadKTF(
 	)
 	if err != nil {
 		return err
+	}
+	if err := runtime.SetWallEpoch(m.wallEpochMillis); err != nil {
+		return fmt.Errorf("initialize KTF wall clock: %w", err)
 	}
 	runtime.DeferThreads = true
 	if limit, ok := ktfrt.PresentationLimit(pkg); ok {

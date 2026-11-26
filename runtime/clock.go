@@ -89,6 +89,19 @@ func (c *Clock) Advance(delta time.Duration) error {
 	return nil
 }
 
+// SetWallEpoch moves the wall clock so that guest time zero falls on
+// epochMillis, leaving the monotonic reading alone. A host uses it to start a
+// machine at a chosen date; it is a clock adjustment, not part of the service
+// configuration, so a state saved under one epoch still loads under another
+// and brings its own clock with it.
+func (c *Clock) SetWallEpoch(epochMillis int64) error {
+	if !validWallTime(epochMillis, c.monotonic, c.timezoneOffsetMins) {
+		return fmt.Errorf("%w: clock wall time overflows", ErrLimitExceeded)
+	}
+	c.wallEpochMillis = epochMillis
+	return nil
+}
+
 func (c *Clock) Snapshot() ClockState {
 	return ClockState{
 		MonotonicNanos:     int64(c.monotonic),

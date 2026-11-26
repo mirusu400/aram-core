@@ -97,8 +97,11 @@ type gnex32Machine struct {
 	image   gnex.GNEX32Image
 	profile gnex32.DeviceProfile
 	runtime *gnex32.Runtime
-	budget  uint64
-	closed  bool
+	// wallEpochMillis is the host-selected wall-clock start, reapplied when a
+	// reset rebuilds the runtime. Zero keeps the runtime default.
+	wallEpochMillis int64
+	budget          uint64
+	closed          bool
 
 	requestIDs externalRequestSequences
 
@@ -167,6 +170,10 @@ func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Sou
 	if err != nil {
 		return nil, true, err
 	}
+	if err := runtime.SetWallEpoch(f.WallEpochMillis); err != nil {
+		_ = runtime.Close()
+		return nil, true, fmt.Errorf("set GNEX32 wall clock: %w", err)
+	}
 	if hasInitialUserNV {
 		runtime.RestoreUserNV(initialUserNV)
 	}
@@ -183,6 +190,7 @@ func (f Factory) createGNEX32Machine(ctx context.Context, source machinecore.Sou
 		image:               image,
 		profile:             compatibility.Device,
 		runtime:             runtime,
+		wallEpochMillis:     f.WallEpochMillis,
 		budget:              budget,
 		audioGeneration:     1,
 		mediaOutputRevision: runtime.AudioOutputRevision(),
@@ -287,6 +295,11 @@ func (m *gnex32Machine) Reset(ctx context.Context) error {
 	}
 	runtime, err := gnex32.NewRuntime(m.image, m.profile)
 	if err != nil {
+		m.state = machinecore.StateFaulted
+		return err
+	}
+	if err := runtime.SetWallEpoch(m.wallEpochMillis); err != nil {
+		_ = runtime.Close()
 		m.state = machinecore.StateFaulted
 		return err
 	}

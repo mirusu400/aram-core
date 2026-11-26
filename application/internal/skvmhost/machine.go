@@ -49,6 +49,7 @@ type Machine struct {
 	midlet                 uint32
 	input                  []machinecore.InputEvent
 	initialState           []byte
+	wallEpoch              int64
 	frameQuantum           time.Duration
 	closed                 bool
 	audioGeneration        uint64
@@ -240,6 +241,23 @@ func newJavaMachine(ctx context.Context, source machinecore.Source, app Applicat
 		return nil, fmt.Errorf("capture initial Java state: %w", err)
 	}
 	return machine, nil
+}
+
+// SetWallEpoch starts the guest wall clock at epochMillis and keeps it there
+// across resets. Zero keeps the default, and so does a title whose exact
+// package pins its own date (quirkdb.LGTWallEpochs): that date is what keeps
+// the title's packaged save coherent.
+func (m *Machine) SetWallEpoch(epochMillis int64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if epochMillis == 0 || m.services.Config.WallEpochMillis != shared.DefaultWallEpochMillis {
+		return nil
+	}
+	if err := m.services.Clock.SetWallEpoch(epochMillis); err != nil {
+		return err
+	}
+	m.wallEpoch = epochMillis
+	return nil
 }
 
 func skvmXFileResources(pkg skloader.Package) map[string][]byte {
@@ -519,6 +537,12 @@ func (m *Machine) Reset(ctx context.Context) error {
 		return fmt.Errorf("reset Java state: %w", err)
 	}
 	m.services = m.vm.Services()
+	if m.wallEpoch != 0 {
+		if err := m.services.Clock.SetWallEpoch(m.wallEpoch); err != nil {
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf("reset Java wall clock: %w", err)
+		}
+	}
 	m.debugFramebuffer = nil
 	for index := range persistence.RecordStores {
 		persistence.RecordStores[index].Owner = m.owner

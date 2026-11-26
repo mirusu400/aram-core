@@ -610,6 +610,14 @@ func (r *Runtime) ensureJavaRuntime() (*JavaRuntime, error) {
 	// Java Clip playback on the public mixer that the Raptor frame loop advances
 	// and drains. Without this, decoded clips remain at position zero forever and
 	// no PCM reaches the frontend (issue #256).
+	// The private clock is likewise never advanced, but Java reads its epoch
+	// for System.currentTimeMillis; start it where the public clock started.
+	publicClock := r.Public.Services.Clock
+	if err := host.Services.Clock.SetWallEpoch(
+		publicClock.WallMillis() - publicClock.Monotonic().Milliseconds(),
+	); err != nil {
+		return nil, fmt.Errorf("initialize Raptor Java Host clock: %w", err)
+	}
 	privateMedia := host.Services.Media
 	host.Services.Media = r.Public.Services.Media
 	// Raptor and its Java adapter share one guest address space. Delegate every

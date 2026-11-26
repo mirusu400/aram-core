@@ -1898,3 +1898,13 @@ func gnex32SoundPayload(resource []byte) (string, []byte, error) {
 		return "", nil, fmt.Errorf("%w: sound resource has signature %x", shared.ErrMediaUnsupported, payload[:4])
 	}
 }
+
+// SetWallEpoch starts the handset wall clock at epochMillis. Zero keeps the
+// configured default. It is a clock setting rather than configuration, so a
+// state saved under one start time loads under another.
+func (r *Runtime) SetWallEpoch(epochMillis int64) error {
+	if epochMillis == 0 {
+		return nil
+	}
+	return r.services.Clock.SetWallEpoch(epochMillis)
+}

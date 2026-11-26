@@ -231,8 +231,11 @@ type Runtime struct {
 	// path; a stack array would escape through the CPU interface per pixel.
 	pixelScratch [4]byte
 
-	Services        *shared.Services
-	serviceConfig   shared.Config
+	Services      *shared.Services
+	serviceConfig shared.Config
+	// wallEpoch, when nonzero, is the host-selected wall-clock start. It is
+	// reapplied whenever the services are rebuilt for a reset.
+	wallEpoch       int64
 	ServiceOwner    shared.OwnerID
 	serviceName     string
 	surfaceServices map[uint32]shared.ServiceID
@@ -437,6 +440,21 @@ func (r *Runtime) SetSystemProperty(name, value string) {
 	r.properties[name] = append([]byte(nil), value...)
 }
 
+// SetWallEpoch starts this runtime's wall clock at epochMillis and keeps it
+// there across resets. Zero keeps the configured default. The epoch is a clock
+// setting rather than part of the service configuration, so saved states stay
+// loadable across runs that started at different times.
+func (r *Runtime) SetWallEpoch(epochMillis int64) error {
+	if epochMillis == 0 {
+		return nil
+	}
+	if err := r.Services.Clock.SetWallEpoch(epochMillis); err != nil {
+		return err
+	}
+	r.wallEpoch = epochMillis
+	return nil
+}
+
 func NewRuntimeForProfile(
 	backend cpu.Backend,
 	frame *image.RGBA,
@@ -600,6 +618,11 @@ func (r *Runtime) Reset() error {
 	services, err := shared.NewServices(r.serviceConfig)
 	if err != nil {
 		return fmt.Errorf("reset public WIPI shared services: %w", err)
+	}
+	if r.wallEpoch != 0 {
+		if err := services.Clock.SetWallEpoch(r.wallEpoch); err != nil {
+			return fmt.Errorf("reset public WIPI wall clock: %w", err)
+		}
 	}
 	owner, err := services.Coordinator.Register(
 		r.serviceName,

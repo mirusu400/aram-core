@@ -85,7 +85,13 @@ func (f Factory) createSKVMMachine(
 	if errors.Is(err, skvmhost.ErrUnsupportedProfile) {
 		return nil, true, fmt.Errorf("%w: %w", ErrUnsupportedSource, err)
 	}
-	return machine, true, err
+	if err != nil {
+		return nil, true, err
+	}
+	if err := machine.SetWallEpoch(f.WallEpochMillis); err != nil {
+		return nil, true, fmt.Errorf("set SKVM wall clock: %w", err)
+	}
+	return machine, true, nil
 }
 
 func nativeKTFDiagnostic(err error) bool {

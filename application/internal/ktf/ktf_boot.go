@@ -1204,3 +1204,14 @@ func (r *Runtime) relocateClientImage() error {
 	}
 	return nil
 }
+
+// SetWallEpoch starts this runtime's wall clock at epochMillis. Zero keeps the
+// clock where the service configuration put it. The epoch is a clock setting
+// rather than part of the service configuration, so saved states stay loadable
+// across runs that started at different times.
+func (r *Runtime) SetWallEpoch(epochMillis int64) error {
+	if epochMillis == 0 || r == nil || r.Services == nil || r.Services.Clock == nil {
+		return nil
+	}
+	return r.Services.Clock.SetWallEpoch(epochMillis)
+}

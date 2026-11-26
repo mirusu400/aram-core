@@ -113,6 +113,14 @@ type Factory struct {
 	// guest text that has no glyphs of its own. Empty inherits the runtime
 	// default (galmuri9); "neodgm" selects the softer NeoDunggeunmo look.
 	FallbackFont string
+	// WallEpochMillis is the wall-clock time (Unix milliseconds, UTC) the guest
+	// clock reads when the machine starts. Zero keeps the fixed default
+	// (runtime.DefaultWallEpochMillis), which is what makes headless runs
+	// reproducible; a product host passes the user's clock so a title that
+	// keeps a calendar or measures time away from the game sees a real date.
+	// It is a clock setting, not part of the service configuration, so a state
+	// saved under one start time loads under another.
+	WallEpochMillis int64
 	// AudioMixMode selected the enhanced "mixing" audio policy, where a looping
 	// track was detached from its clip and kept playing over one-shot effects
 	// instead of the title being able to silence it. That policy violated WIPI
@@ -224,6 +232,7 @@ func (f Factory) Create(ctx context.Context, source machinecore.Source) (machine
 		raptorNet:            f.RaptorNet,
 		offlineCarrierAuth:   f.OfflineCarrierAuth,
 		fallbackFont:         f.FallbackFont,
+		wallEpochMillis:      f.WallEpochMillis,
 		audioMixMode:         f.AudioMixMode,
 		outputSampleRate:     f.OutputSampleRate,
 		outputChannels:       f.OutputChannels,
@@ -315,6 +324,7 @@ type Machine struct {
 	raptorNet              netauth.Backend
 	offlineCarrierAuth     bool
 	fallbackFont           string
+	wallEpochMillis        int64
 	audioMixMode           bool
 	outputSampleRate       uint32
 	outputChannels         uint8
@@ -508,6 +518,10 @@ func (m *Machine) Reset(ctx context.Context) error {
 		if err != nil {
 			m.state = machinecore.StateFaulted
 			return fmt.Errorf("reset KTF services: %w", err)
+		}
+		if err := runtime.SetWallEpoch(m.wallEpochMillis); err != nil {
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf("reset KTF wall clock: %w", err)
 		}
 		if err := runtime.RestorePersistentState(persistence); err != nil {
 			m.state = machinecore.StateFaulted

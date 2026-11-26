@@ -376,6 +376,7 @@ type gvmMachine struct {
 	lastResult             cpu.Result
 	operational            bool
 	fallbackFont           string
+	wallEpochMillis        int64
 	endEntry               uint32
 	eventEntry             uint32
 	inputEntry             uint32
@@ -468,6 +469,7 @@ func (f Factory) createGVMMachine(ctx context.Context, source machinecore.Source
 		budget:           budget,
 		operational:      operational,
 		fallbackFont:     f.FallbackFont,
+		wallEpochMillis:  f.WallEpochMillis,
 		width:            config.width,
 		height:           config.height,
 		orientation:      config.orientation,
@@ -531,7 +533,7 @@ func (m *gvmMachine) resetVMLocked() error {
 		binary.LittleEndian.PutUint16(image.Symbols[0].Data, 1)
 	}
 	clock := new(shared.Clock)
-	if err := clock.Restore(shared.ClockState{WallEpochMillis: 0, TimezoneOffsetMins: 540, Locale: "ko-KR"}); err != nil {
+	if err := clock.Restore(shared.ClockState{WallEpochMillis: m.wallEpochMillis, TimezoneOffsetMins: 540, Locale: "ko-KR"}); err != nil {
 		return fmt.Errorf("initialize GVM diagnostic clock: %w", err)
 	}
 	random := shared.NewRandom(1, 4)
