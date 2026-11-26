@@ -1056,6 +1056,36 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 			},
 		})
 	}
+	// The audio image's boot, command-consumption, and codec-configuration
+	// handshakes let voc_state leave its retry loop and reach IDLE.
+	for _, want := range []MemoryWriteResponseProfile{
+		{
+			MemoryID: "adsp-address-space", Offset: 0x000070ba,
+			Width: Width16, Request: 0xfffe,
+			Writes: []MemoryResponseWriteProfile{{Offset: 0x000070ba, Width: Width16, Value: 0xffff}},
+		},
+		{
+			MemoryID: "adsp-address-space", Offset: 0x00c00004,
+			Width: Width32, Request: 1,
+			Writes: []MemoryResponseWriteProfile{{Offset: 0x00201f92, Width: Width16, Value: 0}},
+		},
+		{
+			MemoryID: "adsp-address-space", Offset: 0x00201f92,
+			Width: Width16, Request: 0x0301,
+			Writes: []MemoryResponseWriteProfile{
+				{Offset: 0x00201f92, Width: Width16, Value: 0},
+				{Offset: 0x000070ba, Width: Width16, Value: 0},
+			},
+		},
+	} {
+		found := false
+		for _, response := range profile.MemoryWriteResponses {
+			found = found || reflect.DeepEqual(response, want)
+		}
+		if !found {
+			t.Fatalf("SPH-W4200 audio DSP response %+v is not profiled", want)
+		}
+	}
 	for _, rule := range profile.ADSPMailbox.ControlRules {
 		foundADSPCommandResponse = foundADSPCommandResponse || reflect.DeepEqual(rule, QualcommADSPControlRuleProfile{
 			Offset: 0x08, Value: 0x00020000, ResponseDelayInstructions: 1,

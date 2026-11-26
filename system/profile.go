@@ -3565,6 +3565,37 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 				{Offset: 0x00202f3a, Width: Width16, Value: 1},
 			},
 		},
+		// The audio images carry their DSP state halfword initialised to -2.
+		// voc_state polls it 101 times after each download and reloads the
+		// image until the started DSP publishes -1.
+		MemoryWriteResponseProfile{
+			MemoryID: "adsp-address-space", Offset: 0x000070ba,
+			Width: Width16, Request: 0xfffe,
+			Writes: []MemoryResponseWriteProfile{{
+				Offset: 0x000070ba, Width: Width16, Value: 0xffff,
+			}},
+		},
+		// qdsp_cmd publishes a command word at +0x201f92, its arguments from
+		// +0x201f94, and then writes 1 to the DSP interrupt word at +0xc00004.
+		// It refuses the next command while the command word is still set; the
+		// running DSP clears it when it consumes the command.
+		MemoryWriteResponseProfile{
+			MemoryID: "adsp-address-space", Offset: 0x00c00004,
+			Width: Width32, Request: 1,
+			Writes: []MemoryResponseWriteProfile{{
+				Offset: 0x00201f92, Width: Width16, Value: 0,
+			}},
+		},
+		// Command 0x301 configures the codec. voc_state then polls the DSP
+		// state halfword until the image reports IDLE (0).
+		MemoryWriteResponseProfile{
+			MemoryID: "adsp-address-space", Offset: 0x00201f92,
+			Width: Width16, Request: 0x0301,
+			Writes: []MemoryResponseWriteProfile{
+				{Offset: 0x00201f92, Width: Width16, Value: 0},
+				{Offset: 0x000070ba, Width: Width16, Value: 0},
+			},
+		},
 	)
 	// DC17's QDSP command queue submits its shared-buffer address through the
 	// mailbox write-control word itself. The mailbox clears the hardware mutex
