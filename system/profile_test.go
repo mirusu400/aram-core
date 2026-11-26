@@ -950,10 +950,20 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 	}
 	if want := []QualcommSBIReadResponse{
 		{Controller: 0x5100, Address: 0x4f, Value: 0xc1},
-		{Controller: 0x5100, Address: 0x53, Value: 0xff},
+		{Controller: 0x5100, Address: 0x53, Value: 0xc4},
 		{Controller: 0x5100, Address: 0x54, Value: 0x01},
 	}; !reflect.DeepEqual(profile.BootControlSBIReadResponses, want) {
 		t.Fatalf("SPH-W4200 PMIC ADC responses = %+v", profile.BootControlSBIReadResponses)
+	}
+	// The HOLD key idles released on bit 30 of GPIO input word +0x093c.
+	foundHoldInput := false
+	for _, input := range profile.BootControlGPIOInputs {
+		foundHoldInput = foundHoldInput || input == (QualcommGPIOInputRegister{Offset: 0x3c, Value: 0x40000000})
+	}
+	if want := []QualcommGPIOInputKeyProfile{
+		{ID: "hold", Offset: 0x3c, Bit: 30, ActiveLow: true},
+	}; !foundHoldInput || !reflect.DeepEqual(profile.BootControlGPIOInputKeys, want) {
+		t.Fatalf("SPH-W4200 HOLD input = %t keys %+v", foundHoldInput, profile.BootControlGPIOInputKeys)
 	}
 	if !slices.Contains(profile.LegacyTopWritableOffsets, uint32(0x03a8)) {
 		t.Fatalf("SPH-W4200 PBL top-page scratch = %#v", profile.LegacyTopWritableOffsets)
@@ -1026,7 +1036,7 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 		})
 		foundSharedConfig = foundSharedConfig || memory == (MemoryRegionProfile{
 			ID: "w4200-shared-config-segment", Kind: MemorySparseRAM,
-			Address: 0x18000000, Size: 0x02600000,
+			Address: 0x18000000, Size: 0x08000000,
 		})
 	}
 	for _, response := range profile.MemoryWriteResponses {
@@ -2532,5 +2542,26 @@ func TestBoardProfileRejectsOverlappingMemory(t *testing.T) {
 	}
 	if err := profile.Validate(); err == nil {
 		t.Fatal("BoardProfile accepted overlapping memory")
+	}
+}
+
+func TestBoardProfileRejectsGPIOInputKeyThatIdlesPressed(t *testing.T) {
+	profile := SPHW4200DC17BoardProfile()
+	check(t, profile.Validate())
+	for index, input := range profile.BootControlGPIOInputs {
+		if input.Offset == 0x3c {
+			profile.BootControlGPIOInputs[index].Value = 0
+		}
+	}
+	if err := profile.Validate(); err == nil {
+		t.Fatal("active-low GPIO input key with a clear idle bit was accepted")
+	}
+	profile = SPHW4200DC17BoardProfile()
+	profile.BootControlGPIOInputKeys = append(
+		profile.BootControlGPIOInputKeys,
+		QualcommGPIOInputKeyProfile{ID: "unprofiled", Offset: 0x44, Bit: 0},
+	)
+	if err := profile.Validate(); err == nil {
+		t.Fatal("GPIO input key on an unprofiled input word was accepted")
 	}
 }

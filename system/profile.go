@@ -468,6 +468,29 @@ type QualcommPrimaryClockKeyProfile struct {
 	ActiveLow bool
 }
 
+// QualcommGPIOInputKeyProfile names a handset key wired straight to one bit
+// of a profiled boot-control GPIO input word, outside any scanned matrix.
+// Firmware samples the word itself, so no interrupt routing is implied.
+type QualcommGPIOInputKeyProfile struct {
+	ID        string
+	Offset    uint32
+	Bit       uint8
+	ActiveLow bool
+}
+
+// BootControlGPIOInputLines lists the input bits which the profiled GPIO input
+// keys drive, in the form the interrupt/GPIO aperture is constructed with.
+func (p BoardProfile) BootControlGPIOInputLines() []QualcommGPIOInputLine {
+	if len(p.BootControlGPIOInputKeys) == 0 {
+		return nil
+	}
+	lines := make([]QualcommGPIOInputLine, 0, len(p.BootControlGPIOInputKeys))
+	for _, key := range p.BootControlGPIOInputKeys {
+		lines = append(lines, QualcommGPIOInputLine{Offset: key.Offset, Bit: key.Bit})
+	}
+	return lines
+}
+
 func (p HLECallProfile) validate() error {
 	trap := cpu.ExecutionTrap{Address: p.Address, Mode: p.Mode}
 	if !validProfileID(p.ID) || !validProfileID(p.Contract) || !trap.Valid() ||
@@ -539,6 +562,7 @@ type BoardProfile struct {
 	BootControlGroupedStatusResponses         []QualcommBootGroupedStatusResponse
 	BootControlWatchdogReadable               bool
 	BootControlGPIOInputs                     []QualcommGPIOInputRegister
+	BootControlGPIOInputKeys                  []QualcommGPIOInputKeyProfile
 	BootControlInterruptStatusAliases         []QualcommInterruptStatusAlias
 	PrimaryClockWritableOffsets               []uint32
 	PrimaryClockReadOnlyRegisters             []QualcommPrimaryClockReadOnlyRegister
@@ -753,10 +777,31 @@ func (p BoardProfile) Validate() error {
 		return fmt.Errorf("board profile %q boot-control register profile: %w", p.ID, err)
 	}
 	if err := validateQualcommInterruptControllerConfig(QualcommInterruptControllerConfig{
-		GPIOInputs:    p.BootControlGPIOInputs,
-		StatusAliases: p.BootControlInterruptStatusAliases,
+		GPIOInputs:     p.BootControlGPIOInputs,
+		GPIOInputLines: p.BootControlGPIOInputLines(),
+		StatusAliases:  p.BootControlInterruptStatusAliases,
 	}); err != nil {
 		return fmt.Errorf("board profile %q boot-control interrupt inputs: %w", p.ID, err)
+	}
+	gpioInputKeyIDs := make(map[string]struct{}, len(p.BootControlGPIOInputKeys))
+	for _, key := range p.BootControlGPIOInputKeys {
+		if !validProfileID(key.ID) || key.Bit >= 32 {
+			return fmt.Errorf("board profile %q has invalid GPIO input key %q", p.ID, key.ID)
+		}
+		if _, duplicate := gpioInputKeyIDs[key.ID]; duplicate {
+			return fmt.Errorf("board profile %q repeats GPIO input key ID %q", p.ID, key.ID)
+		}
+		if _, duplicate := primaryClockKeyIDs[key.ID]; duplicate {
+			return fmt.Errorf("board profile %q repeats key ID %q", p.ID, key.ID)
+		}
+		gpioInputKeyIDs[key.ID] = struct{}{}
+		// A key must idle released: an active-low line whose profiled word
+		// leaves the bit clear would read as permanently held.
+		for _, input := range p.BootControlGPIOInputs {
+			if input.Offset == key.Offset && (input.Value>>key.Bit&1 != 0) != key.ActiveLow {
+				return fmt.Errorf("board profile %q GPIO input key %q does not idle released", p.ID, key.ID)
+			}
+		}
 	}
 	if err := validateQualcommPrimaryClockWritableOffsets(p.PrimaryClockWritableOffsets); err != nil {
 		return fmt.Errorf("board profile %q primary-clock writable offsets: %w", p.ID, err)
@@ -3471,10 +3516,28 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 	// DC17 uses the same PMIC ADC contract as the related MSM6280 handset:
 	// register 0x54 publishes conversion complete, 0x4f retains the selected
 	// 8-bit mode, and 0x53 supplies the completed battery sample.
+	//
+	// DC17 scales the sample before averaging ten of them into an 8-bit
+	// battery voltage: the related handset's 0xff sample averages to about
+	// 0x104, whose low byte reads as a missing battery and puts the handset
+	// in its test-jig idle state with battery level 0. 0xc4 averages to
+	// about 0xc7, above the firmware's 0xb9 full-level threshold.
 	profile.BootControlSBIReadResponses = []QualcommSBIReadResponse{
 		{Controller: 0x5100, Address: 0x4f, Value: 0xc1},
-		{Controller: 0x5100, Address: 0x53, Value: 0xff},
+		{Controller: 0x5100, Address: 0x53, Value: 0xc4},
 		{Controller: 0x5100, Address: 0x54, Value: 0x01},
+	}
+	// DC17's handset task polls GPIO input word CHIP_BASE+0x093c and treats
+	// a clear bit 30 as the side HOLD key: a press emits its key code and 20
+	// consecutive samples a long press. The word otherwise read back as zero,
+	// which held the key down permanently. HOLD is also the only way to wake
+	// the panel after the firmware's idle timeout disables the pen interrupt.
+	profile.BootControlGPIOInputs = append(
+		profile.BootControlGPIOInputs,
+		QualcommGPIOInputRegister{Offset: 0x3c, Value: 0x40000000},
+	)
+	profile.BootControlGPIOInputKeys = []QualcommGPIOInputKeyProfile{
+		{ID: "hold", Offset: 0x3c, Bit: 30, ActiveLow: true},
 	}
 	// AMSS samples the PBL-retained word at 0xfffff3a8 during its reset-vector
 	// hardware pass. A cold handset starts with no retained request asserted;
@@ -3603,10 +3666,12 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 		Address: 0x08000000, Size: 0x08000000,
 	}, MemoryRegionProfile{
 		// DC17's final two progressive-ELF records form the Qualcomm shared
-		// configuration segment at 0x18000000..0x1a5e9900. Keep the bounded,
-		// page-aligned aperture sparse because AMSS reads only selected tables.
+		// configuration segment at 0x18000000..0x1a5e9900. Dynamically loaded
+		// application modules place their static data directly above it (the
+		// built-in pet game constructs objects at 0x1a6358xx), so expose the
+		// complete EBI chip-select aperture as page-backed RAM like bank 1.
 		ID: "w4200-shared-config-segment", Kind: MemorySparseRAM,
-		Address: 0x18000000, Size: 0x02600000,
+		Address: 0x18000000, Size: 0x08000000,
 	})
 	// AMSS polls bit 1 of this external-bus status word until the controller is
 	// ready. No write to the status address occurs during initialization.

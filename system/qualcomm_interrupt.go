@@ -59,9 +59,18 @@ type QualcommInterruptStatusAlias struct {
 	ResetValue uint32
 }
 
+// QualcommGPIOInputLine names one bit of a profiled GPIO input word which an
+// external board signal, such as a handset side key, drives at runtime. The
+// containing register's configured value supplies the idle level.
+type QualcommGPIOInputLine struct {
+	Offset uint32
+	Bit    uint8
+}
+
 type QualcommInterruptControllerConfig struct {
-	GPIOInputs    []QualcommGPIOInputRegister
-	StatusAliases []QualcommInterruptStatusAlias
+	GPIOInputs     []QualcommGPIOInputRegister
+	GPIOInputLines []QualcommGPIOInputLine
+	StatusAliases  []QualcommInterruptStatusAlias
 }
 
 // InterruptLineSink is implemented by a CPU backend or a test wire. The
@@ -81,6 +90,9 @@ type QualcommInterruptController struct {
 	gpioWriteObserver QualcommGPIOWriteObserver
 	gpioInputOffsets  []uint32
 	gpioInputs        map[uint32]uint32
+	gpioLineOffsets   []uint32
+	gpioLineMasks     map[uint32]uint32
+	gpioLineLevels    map[uint32]uint32
 	statusAliases     []QualcommInterruptStatusAlias
 	statusAliasBanks  map[uint32]uint8
 	resetStatus       [2]uint32
@@ -114,6 +126,7 @@ func NewQualcommInterruptControllerWithConfig(
 		sink:             sink,
 		gpioInputOffsets: make([]uint32, 0, len(inputs)),
 		gpioInputs:       make(map[uint32]uint32, len(inputs)),
+		gpioLineMasks:    make(map[uint32]uint32, len(config.GPIOInputLines)),
 		statusAliases:    aliases,
 		statusAliasBanks: make(map[uint32]uint8, len(aliases)),
 	}
@@ -121,6 +134,15 @@ func NewQualcommInterruptControllerWithConfig(
 		device.gpioInputOffsets = append(device.gpioInputOffsets, input.Offset)
 		device.gpioInputs[input.Offset] = input.Value
 	}
+	for _, line := range config.GPIOInputLines {
+		if device.gpioLineMasks[line.Offset] == 0 {
+			device.gpioLineOffsets = append(device.gpioLineOffsets, line.Offset)
+		}
+		device.gpioLineMasks[line.Offset] |= uint32(1) << line.Bit
+	}
+	sort.Slice(device.gpioLineOffsets, func(left, right int) bool {
+		return device.gpioLineOffsets[left] < device.gpioLineOffsets[right]
+	})
 	for _, alias := range aliases {
 		device.statusAliasBanks[alias.Offset] = alias.Bank
 		device.resetStatus[alias.Bank] = alias.ResetValue
@@ -136,6 +158,16 @@ func validateQualcommInterruptControllerConfig(config QualcommInterruptControlle
 	seen := make(map[uint32]struct{}, len(config.GPIOInputs)+len(config.StatusAliases))
 	for _, input := range config.GPIOInputs {
 		seen[input.Offset] = struct{}{}
+	}
+	lines := make(map[QualcommGPIOInputLine]struct{}, len(config.GPIOInputLines))
+	for _, line := range config.GPIOInputLines {
+		if _, profiled := seen[line.Offset]; !profiled || line.Bit >= 32 {
+			return fmt.Errorf("GPIO input line 0x%x bit %d: %w", line.Offset, line.Bit, ErrInvalidRegion)
+		}
+		if _, duplicate := lines[line]; duplicate {
+			return fmt.Errorf("duplicate GPIO input line 0x%x bit %d: %w", line.Offset, line.Bit, ErrInvalidRegion)
+		}
+		lines[line] = struct{}{}
 	}
 	bankResets := make(map[uint8]uint32, 2)
 	for _, alias := range config.StatusAliases {
@@ -203,7 +235,34 @@ func (d *QualcommInterruptController) Reset() error {
 	d.polarity = [4]uint32{}
 	d.detect = [3]uint32{}
 	d.gpioStatus = [3]uint32{}
+	d.gpioLineLevels = d.idleGPIOLineLevels()
 	return d.updateOutputs()
+}
+
+// idleGPIOLineLevels returns the externally driven bits at the levels the
+// board profile configured for their input words.
+func (d *QualcommInterruptController) idleGPIOLineLevels() map[uint32]uint32 {
+	levels := make(map[uint32]uint32, len(d.gpioLineMasks))
+	for offset, mask := range d.gpioLineMasks {
+		levels[offset] = d.gpioInputs[offset] & mask
+	}
+	return levels
+}
+
+// SetGPIOInputLine drives one profiled external input bit high or low. The
+// level is machine state: it is saved, restored, and returned to the
+// profiled idle level by Reset.
+func (d *QualcommInterruptController) SetGPIOInputLine(offset uint32, bit uint8, high bool) error {
+	if bit >= 32 || d.gpioLineMasks[offset]&(uint32(1)<<bit) == 0 {
+		return fmt.Errorf("%w: GPIO input line 0x%x bit %d", ErrQualcommInterruptControllerMMIO, offset, bit)
+	}
+	mask := uint32(1) << bit
+	if high {
+		d.gpioLineLevels[offset] |= mask
+	} else {
+		d.gpioLineLevels[offset] &^= mask
+	}
+	return nil
 }
 
 func (d *QualcommInterruptController) Read(offset uint32, width Width) (uint32, error) {
@@ -211,6 +270,9 @@ func (d *QualcommInterruptController) Read(offset uint32, width Width) (uint32, 
 		return 0, fmt.Errorf("%w: read%d at 0x%x", ErrQualcommInterruptControllerMMIO, width*8, offset)
 	}
 	if value, ok := d.gpioInputs[offset]; ok {
+		if mask := d.gpioLineMasks[offset]; mask != 0 {
+			value = value&^mask | d.gpioLineLevels[offset]
+		}
 		return value, nil
 	}
 	if bank, ok := d.statusAliasBanks[offset]; ok {
@@ -418,7 +480,7 @@ func (d *QualcommInterruptController) SaveState() ([]byte, error) {
 		version = 2
 		headerSize = 12 + len(d.gpioInputOffsets)*8
 	}
-	state := make([]byte, headerSize+words*4)
+	state := make([]byte, headerSize+(words+len(d.gpioLineOffsets))*4)
 	copy(state, "QINT")
 	binary.LittleEndian.PutUint32(state[4:8], version)
 	offset := 8
@@ -455,11 +517,17 @@ func (d *QualcommInterruptController) SaveState() ([]byte, error) {
 	put(d.polarity[:])
 	put(d.detect[:])
 	put(d.gpioStatus[:])
+	for _, lineOffset := range d.gpioLineOffsets {
+		put([]uint32{d.gpioLineLevels[lineOffset]})
+	}
 	return state, nil
 }
 
 func (d *QualcommInterruptController) LoadState(state []byte) error {
-	const words = 2 + 2 + 2 + 2 + 3 + 4 + 3 + 3
+	const registerWords = 2 + 2 + 2 + 2 + 3 + 4 + 3 + 3
+	// Externally driven input lines append one level word per profiled
+	// register; controllers without such lines keep the earlier layout.
+	words := registerWords + len(d.gpioLineOffsets)
 	if len(state) < 8 || string(state[:4]) != "QINT" {
 		return ErrInvalidState
 	}
@@ -475,7 +543,7 @@ func (d *QualcommInterruptController) LoadState(state []byte) error {
 		}
 		inputCount := binary.LittleEndian.Uint32(state[8:12])
 		if inputCount != uint32(len(d.gpioInputOffsets)) ||
-			uint64(len(state)) != 12+uint64(inputCount)*8+words*4 {
+			uint64(len(state)) != 12+uint64(inputCount)*8+uint64(words)*4 {
 			return ErrInvalidState
 		}
 		offset = 12
@@ -505,7 +573,7 @@ func (d *QualcommInterruptController) LoadState(state []byte) error {
 		}
 		aliasCount := binary.LittleEndian.Uint32(state[offset : offset+4])
 		offset += 4
-		expectedSize := uint64(offset) + uint64(aliasCount)*12 + words*4
+		expectedSize := uint64(offset) + uint64(aliasCount)*12 + uint64(words)*4
 		if aliasCount != uint32(len(d.statusAliases)) || expectedSize != uint64(len(state)) {
 			return ErrInvalidState
 		}
@@ -540,9 +608,19 @@ func (d *QualcommInterruptController) LoadState(state []byte) error {
 	if status[0]&level[0] != level[0] || status[1]&level[1] != level[1] {
 		return ErrInvalidState
 	}
+	lineLevels := make(map[uint32]uint32, len(d.gpioLineOffsets))
+	for _, lineOffset := range d.gpioLineOffsets {
+		var lineLevel [1]uint32
+		read(lineLevel[:])
+		if lineLevel[0]&^d.gpioLineMasks[lineOffset] != 0 {
+			return ErrInvalidState
+		}
+		lineLevels[lineOffset] = lineLevel[0]
+	}
 	previous := *d
 	d.irqEnable, d.fiqEnable, d.status, d.level = irqEnable, fiqEnable, status, level
 	d.gpioEnable, d.polarity, d.detect, d.gpioStatus = gpioEnable, polarity, detect, gpioStatus
+	d.gpioLineLevels = lineLevels
 	if err := d.updateOutputs(); err != nil {
 		*d = previous
 		_ = d.updateOutputs()

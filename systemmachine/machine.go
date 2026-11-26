@@ -402,6 +402,8 @@ type Machine struct {
 	vectoredIRQs   *system.QualcommVectoredInterruptController
 	primaryClock   *system.QualcommPrimaryClockControl
 	primaryKeys    map[string]system.QualcommPrimaryClockKeyProfile
+	gpioInputs     *system.QualcommInterruptController
+	gpioInputKeys  map[string]system.QualcommGPIOInputKeyProfile
 	audio          *schw830Audio
 	controls       []string
 
@@ -739,8 +741,9 @@ func newSamsungQualcommMachine(
 	}
 	legacyInterrupts, err := system.NewQualcommInterruptControllerWithConfig(
 		system.QualcommInterruptControllerConfig{
-			GPIOInputs:    board.BootControlGPIOInputs,
-			StatusAliases: board.BootControlInterruptStatusAliases,
+			GPIOInputs:     board.BootControlGPIOInputs,
+			GPIOInputLines: board.BootControlGPIOInputLines(),
+			StatusAliases:  board.BootControlInterruptStatusAliases,
 		},
 		legacyInterruptSink,
 	)
@@ -1229,6 +1232,7 @@ func newSamsungQualcommMachine(
 		panel:        dcsPanelController, mdp: mdp, panelProbe: panelProbe, keypad: keypad, touchscreen: touchscreen,
 		vectoredIRQs: vectoredInterrupts,
 		primaryClock: primaryClock, primaryKeys: boardPrimaryClockKeys(board), audio: audio,
+		gpioInputs: legacyInterrupts, gpioInputKeys: boardGPIOInputKeys(board),
 		controls:                 boardControls(board),
 		resetCPUState:            append([]byte(nil), resetCPUState...),
 		factoryNANDState:         append([]byte(nil), factoryNANDState...),
@@ -4282,7 +4286,21 @@ func boardControls(board system.BoardProfile) []string {
 	for _, key := range board.PrimaryClockKeys {
 		controls = append(controls, key.ID)
 	}
+	for _, key := range board.BootControlGPIOInputKeys {
+		controls = append(controls, key.ID)
+	}
 	return controls
+}
+
+func boardGPIOInputKeys(board system.BoardProfile) map[string]system.QualcommGPIOInputKeyProfile {
+	if len(board.BootControlGPIOInputKeys) == 0 {
+		return nil
+	}
+	keys := make(map[string]system.QualcommGPIOInputKeyProfile, len(board.BootControlGPIOInputKeys))
+	for _, key := range board.BootControlGPIOInputKeys {
+		keys[key.ID] = key
+	}
+	return keys
 }
 
 func boardPrimaryClockKeys(board system.BoardProfile) map[string]system.QualcommPrimaryClockKeyProfile {
@@ -4413,6 +4431,12 @@ func (m *Machine) SetKey(id string, pressed bool) error {
 			high = !pressed
 		}
 		return m.primaryClock.SetInputLine(key.InputLine, high)
+	}
+	if key, ok := m.gpioInputKeys[id]; ok {
+		if m.gpioInputs == nil {
+			return ErrUnsupportedControl
+		}
+		return m.gpioInputs.SetGPIOInputLine(key.Offset, key.Bit, pressed != key.ActiveLow)
 	}
 	if m.keypad == nil {
 		return ErrUnsupportedControl
