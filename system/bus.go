@@ -172,6 +172,7 @@ type region struct {
 	device         Device
 	sparse         *sparseRAM
 	writeResponses map[memoryWriteResponseKey][]memoryResponseWrite
+	coprocessor    MemoryCoprocessor
 }
 
 type memoryWriteResponseKey struct {
@@ -406,6 +407,107 @@ func (b *Bus) configureMemoryWriteResponses(
 		invalidate()
 	}
 	return nil
+}
+
+// MemoryCoprocessor is a second processor which shares one ordinary-memory
+// region with the host CPU and reacts to what the host stores there. It is
+// called after the store has been committed, on the storing CPU's thread and
+// with the bus locked, so it must reach guest memory only through the
+// CoprocessorMemory it is handed.
+type MemoryCoprocessor interface {
+	MemoryWritten(memory CoprocessorMemory, offset uint32, width Width, value uint32)
+}
+
+// CoprocessorMemory is a coprocessor's bus-master view of guest memory. Both
+// calls decline, rather than fault, when the range is not ordinary memory
+// inside one region.
+type CoprocessorMemory interface {
+	ReadMemory(address uint32, destination []byte) bool
+	WriteMemory(address uint32, source []byte) bool
+}
+
+type lockedBusMemory struct{ bus *Bus }
+
+func (m lockedBusMemory) region(address uint32, size int) (*region, uint32, bool) {
+	if size <= 0 {
+		return nil, 0, false
+	}
+	regions := m.bus.regions
+	index := sort.Search(len(regions), func(index int) bool { return uint64(address) < regions[index].end() })
+	if index >= len(regions) || address < regions[index].address ||
+		uint64(address)+uint64(size) > regions[index].end() || regions[index].kind == regionMMIO {
+		return nil, 0, false
+	}
+	return &regions[index], address - regions[index].address, true
+}
+
+func (m lockedBusMemory) ReadMemory(address uint32, destination []byte) bool {
+	mapped, offset, ok := m.region(address, len(destination))
+	if !ok {
+		return false
+	}
+	if mapped.kind == regionSparseRAM {
+		mapped.sparse.read(offset, destination)
+		return true
+	}
+	copy(destination, mapped.data[int(offset):int(offset)+len(destination)])
+	return true
+}
+
+func (m lockedBusMemory) WriteMemory(address uint32, source []byte) bool {
+	mapped, offset, ok := m.region(address, len(source))
+	if !ok || mapped.kind == regionROM {
+		return false
+	}
+	if mapped.kind == regionSparseRAM {
+		mapped.sparse.write(offset, source)
+		return true
+	}
+	copy(mapped.data[int(offset):int(offset)+len(source)], source)
+	return true
+}
+
+// AttachMemoryCoprocessor routes every exact-width host store into the named
+// ordinary-memory region to coprocessor. Such a region is never handed to the
+// CPU as direct memory.
+func (b *Bus) AttachMemoryCoprocessor(name string, coprocessor MemoryCoprocessor) error {
+	if coprocessor == nil {
+		return ErrInvalidRegion
+	}
+	b.mu.Lock()
+	var mapped *region
+	for index := range b.regions {
+		if b.regions[index].name == name {
+			mapped = &b.regions[index]
+			break
+		}
+	}
+	if mapped == nil || mapped.kind == regionROM || mapped.kind == regionMMIO || mapped.coprocessor != nil {
+		b.mu.Unlock()
+		return ErrInvalidRegion
+	}
+	mapped.coprocessor = coprocessor
+	invalidate := b.directMemoryInvalidator
+	b.mu.Unlock()
+	if invalidate != nil {
+		invalidate()
+	}
+	return nil
+}
+
+// reactsToWrites reports whether a store into the region has an effect beyond
+// the bytes it writes.
+func (r *region) reactsToWrites() bool {
+	return len(r.writeResponses) != 0 || r.coprocessor != nil
+}
+
+func (b *Bus) applyMemoryWrite(mapped *region, offset uint32, width Width, value uint32) {
+	if len(mapped.writeResponses) != 0 {
+		applyMemoryWriteResponse(mapped, offset, width, value)
+	}
+	if mapped.coprocessor != nil {
+		mapped.coprocessor.MemoryWritten(lockedBusMemory{bus: b}, offset, width, value)
+	}
 }
 
 func applyMemoryWriteResponse(mapped *region, offset uint32, width Width, value uint32) {
@@ -720,8 +822,8 @@ func (b *Bus) WriteBlock(
 		start := int(offset)
 		copy(mapped.data[start:start+len(source)], source)
 	}
-	if width, exact := widthForSize(len(source)); exact && len(mapped.writeResponses) != 0 {
-		applyMemoryWriteResponse(mapped, offset, width, valueOf(source))
+	if width, exact := widthForSize(len(source)); exact && mapped.reactsToWrites() {
+		b.applyMemoryWrite(mapped, offset, width, valueOf(source))
 	}
 	b.mu.Unlock()
 	return true, nil
@@ -738,7 +840,7 @@ func (b *Bus) DirectMemoryRegion(
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	mapped, _, ok := b.resolveBlock(address, size, permission)
-	if !ok || mapped.kind != regionRAM || len(mapped.writeResponses) != 0 {
+	if !ok || mapped.kind != regionRAM || mapped.reactsToWrites() {
 		return cpu.DirectMemoryRegion{}, false
 	}
 	return cpu.DirectMemoryRegion{
@@ -801,8 +903,8 @@ func (b *Bus) WriteContext(
 			start := int(offset)
 			copy(mapped.data[start:start+len(source)], source)
 		}
-		if len(mapped.writeResponses) != 0 {
-			applyMemoryWriteResponse(mapped, offset, width, valueOf(source))
+		if mapped.reactsToWrites() {
+			b.applyMemoryWrite(mapped, offset, width, valueOf(source))
 		}
 		if !b.observed {
 			b.mu.Unlock()

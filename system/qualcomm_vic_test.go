@@ -328,3 +328,50 @@ func TestQualcommVectoredInterruptControllerRestoresResetEnabledSources(t *testi
 		t.Fatalf("restored reset enabled sources = %#v", got)
 	}
 }
+
+func TestQualcommVectoredInterruptControllerLatchedGroupChildClearsOnAcknowledge(t *testing.T) {
+	probe := &interruptLineProbe{}
+	config := QualcommVectoredInterruptConfig{
+		SourceCount: 49, Bank0Sources: 25, ReverseSourceOrder: true,
+		GroupCount: 1,
+		Groups: [qualcommVICMaximumGroups]QualcommVectoredInterruptGroupConfig{{
+			Source: 11, EnableOffset: 0x10, StatusOffset: 0x84, ValidMask: 0x07, LatchedMask: 0x03,
+		}},
+	}
+	device, err := NewQualcommVectoredInterruptController(config, probe)
+	check(t, err)
+	// Registering the child handlers enables both children.
+	check(t, device.Write(0x10, Width32, 0x07))
+	check(t, device.Write(qualcommVICEnable1Offset, Width32, 1<<12))
+	read := func(offset uint32) uint32 {
+		t.Helper()
+		value, readErr := device.Read(offset, Width32)
+		check(t, readErr)
+		return value
+	}
+
+	// A pulsed child stays visible until the dispatcher writes it back.
+	check(t, device.SetGroupedSource(0x84, 0x01, true))
+	if status := read(0x84); status != 0x01 || !probe.irq {
+		t.Fatalf("latched child status = %#x irq %t", status, probe.irq)
+	}
+	check(t, device.Write(0x10, Width32, 0x01))
+	if status := read(0x84); status != 0 || probe.irq {
+		t.Fatalf("acknowledged child status = %#x irq %t", status, probe.irq)
+	}
+	if enabled := read(0x10); enabled != 0x07 {
+		t.Fatalf("acknowledge changed group enables to %#x", enabled)
+	}
+
+	// A level child outside the latched mask ignores the same write.
+	check(t, device.SetGroupedSource(0x84, 0x04, true))
+	check(t, device.Write(0x10, Width32, 0x04))
+	if status := read(0x84); status != 0x04 || !probe.irq {
+		t.Fatalf("level child status after write = %#x irq %t", status, probe.irq)
+	}
+
+	config.Groups[0].LatchedMask = 0x08
+	if _, err := NewQualcommVectoredInterruptController(config, probe); err == nil {
+		t.Fatal("latched mask outside the valid children was accepted")
+	}
+}
