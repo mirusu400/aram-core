@@ -139,6 +139,7 @@ func (r *Runtime) AllocateJavaHeapBytes(size uint32, clear bool) (uint32, error)
 // collectJavaHeap frees every heap block no root can reach, and answers how
 // many it freed.
 func (r *Runtime) collectJavaHeap() int {
+	r.javaImageBytesSinceGC = 0
 	root := r.Heap.Root()
 	if len(root.Allocations) == 0 {
 		return 0
@@ -232,6 +233,7 @@ func (r *Runtime) collectJavaHeap() int {
 	// The entries left over describe objects nothing can reach. Dropping them
 	// is what lets the block go, and it keeps the host-side table from growing
 	// for as long as the title runs.
+	r.releaseUnreachableJavaImageServices(dead)
 	pruned := 0
 	for _, table := range weak {
 		for _, key := range table.MapKeys() {
@@ -486,12 +488,8 @@ type weakEntry struct {
 // Image.getGraphics() a few hundred times a frame, and two million dead
 // Graphics filled the heap while the collector was unable to touch one of them.
 //
-// A table belongs here only if its key is a Java object the guest allocated and
-// its value carries no host resource that has to be released by hand. Leaving a
-// table out is safe - it keeps behaving as a root and retains a little garbage;
-// putting one in that does not belong is not, so the streams, the media clips,
-// the images with their surfaces, the LWC components and everything about a
-// class or a thread stay strong.
+// A weak table is keyed by a Java object. If a value owns a runtime service,
+// its dead entries must release that service before the table is pruned.
 func (r *Runtime) weakTables() []reflect.Value {
 	candidates := []any{
 		r.JavaStrings,
@@ -528,6 +526,11 @@ func (r *Runtime) weakTables() []reflect.Value {
 		r.enumerations,
 		r.Graphics,
 		r.GraphicsServices,
+		r.images,
+		r.imageServices,
+		r.imageSurfaceUse,
+		r.javaAssetServices,
+		r.blitCaches,
 		r.animateImages,
 	}
 	candidates = append(candidates, r.gcExtraWeakTables...)

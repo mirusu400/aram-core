@@ -1,9 +1,11 @@
 package ktf
 
 import (
+	"bytes"
 	"context"
 	"image"
 	"image/color"
+	"image/gif"
 	"testing"
 )
 
@@ -95,6 +97,71 @@ func TestKTFWIPI2MutableAnimateImageStoresFramesAndRates(t *testing.T) {
 	check(t, err)
 	if frame != state.frames[1] {
 		t.Fatalf("AnimateImage frame = 0x%08x, want 0x%08x", frame, state.frames[1])
+	}
+}
+
+func TestKTFWIPI2MutableAnimateImageChecksTotalPixelBytes(t *testing.T) {
+	r := newTestRuntime(t)
+	r.JvmContext = allocWords(t, r, 3+128)
+	r.Services.Config.Limits.Assets.MaxDecodedBytes = 127
+	parameters := allocWords(t, r, 3)
+	r.NativeParameterBase = parameters
+	check(t, r.writeWords(parameters, []uint32{2, 4, 4}))
+
+	_, err := r.handleAnimateImageMethod("createAnimateImage", "(III)Lorg/kwis/msp/lcdui/AnimateImage;")
+	if err == nil || r.LastJavaThrowName != "java/lang/IllegalArgumentException" {
+		t.Fatalf("oversized mutable animation = %v, throw %q", err, r.LastJavaThrowName)
+	}
+	if len(r.images) != 0 || len(r.animateImages) != 0 {
+		t.Fatal("oversized animation allocated image frames")
+	}
+}
+
+func TestKTFWIPI2GIFAnimateImageChecksFrameLimit(t *testing.T) {
+	r := newTestRuntime(t)
+	r.JvmContext = allocWords(t, r, 3+128)
+	r.Services.Config.Limits.Assets.MaxFrames = 1
+	frame := image.NewPaletted(image.Rect(0, 0, 2, 2), color.Palette{color.Black, color.White})
+	var encoded bytes.Buffer
+	check(t, gif.EncodeAll(&encoded, &gif.GIF{
+		Image: []*image.Paletted{frame, frame},
+		Delay: []int{3, 7},
+	}))
+	r.Pkg.Resources = map[string][]byte{"animation.gif": encoded.Bytes()}
+
+	_, err := r.newKTFAnimateImageResource("animation.gif")
+	if err == nil || r.LastJavaThrowName != "java/io/IOException" {
+		t.Fatalf("oversized GIF animation = %v, throw %q", err, r.LastJavaThrowName)
+	}
+	if len(r.images) != 0 || len(r.animateImages) != 0 {
+		t.Fatal("oversized GIF allocated image frames")
+	}
+
+	r.Services.Config.Limits.Assets.MaxFrames = 2
+	instance, err := r.newKTFAnimateImageResource("animation.gif")
+	check(t, err)
+	animated := r.animateImages[instance]
+	if len(animated.frames) != 2 || animated.rates[0] != 30 || animated.rates[1] != 70 {
+		t.Fatalf("GIF animation state = %+v", animated)
+	}
+}
+
+func TestKTFWIPI2AnimateImageFramesSurviveCollectionDuringConstruction(t *testing.T) {
+	r := newTestRuntime(t)
+	r.JvmContext = allocWords(t, r, 3+128)
+	instance, err := r.newKTFAnimateImage(3, 2, 2, true, "", func(int) (uint32, error) {
+		r.CollectJavaHeapForTest()
+		return r.newJavaImage(image.NewRGBA(image.Rect(0, 0, 2, 2)))
+	})
+	check(t, err)
+	animated := r.animateImages[instance]
+	if animated == nil {
+		t.Fatal("collection reclaimed the animation under construction")
+	}
+	for index, frame := range animated.frames {
+		if r.images[frame] == nil {
+			t.Fatalf("collection reclaimed frame %d", index)
+		}
 	}
 }
 

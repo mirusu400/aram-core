@@ -6,7 +6,101 @@ import (
 	"image/color"
 	"image/png"
 	"testing"
+
+	"github.com/mirusu400/aram-core/cpu"
+	shared "github.com/mirusu400/aram-core/runtime"
 )
+
+func TestKTFJavaImageCollectionReleasesUnreachablePixelsAndMirrors(t *testing.T) {
+	r := newTestRuntime(t)
+	r.JvmContext = allocWords(t, r, 3+128)
+
+	pixels := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	dead, err := r.newJavaImage(pixels)
+	check(t, err)
+	mirror, err := r.ensureJavaImageSurface(dead)
+	check(t, err)
+	r.ensureKTFBlitCache(dead, pixels)
+
+	live, err := r.newJavaImage(image.NewRGBA(pixels.Bounds()))
+	check(t, err)
+	parameters := allocWords(t, r, 2)
+	r.NativeParameterBase = parameters
+	check(t, r.writeWords(parameters, []uint32{live, 0}))
+	graphics, err := r.handleImageMethod("getGraphics", "()Lorg/kwis/msp/lcdui/Graphics;")
+	check(t, err)
+	if graphics == 0 {
+		t.Fatal("image returned no Graphics object")
+	}
+	check(t, r.writeWords(parameters, []uint32{0, 0}))
+	r.NativeParameterBase = 0
+	check(t, r.CPU.WriteRegister(cpu.RegisterR8, graphics))
+
+	r.CollectJavaHeapForTest()
+	if r.images[dead] != nil || r.blitCaches[dead] != nil ||
+		r.imageServices[dead] != 0 || r.imageSurfaceUse[dead] != 0 {
+		t.Fatal("unreachable image still has pixels or cache entries")
+	}
+	if _, err := r.Services.Graphics.Descriptor(r.ServiceOwner, mirror); err == nil {
+		t.Fatal("unreachable image's service surface is still allocated")
+	}
+	if r.images[live] == nil || r.Graphics[graphics] == nil || r.Graphics[graphics].Target != r.images[live] {
+		t.Fatal("collection lost the image reachable through live Graphics")
+	}
+}
+
+func TestKTFJavaImageGrowthTriggersCollection(t *testing.T) {
+	r := newTestRuntime(t)
+	r.JvmContext = allocWords(t, r, 3+128)
+	const count = 64
+	for range count {
+		_, err := r.newJavaImage(image.NewRGBA(image.Rect(0, 0, 512, 512)))
+		check(t, err)
+	}
+	if len(r.images) > count/2 {
+		t.Fatalf("host pixel growth retained %d of %d unreachable images", len(r.images), count)
+	}
+}
+
+func TestKTFJavaImageCollectionKeepsSharedLegacyAssetUntilLastImage(t *testing.T) {
+	r := newTestRuntime(t)
+	r.JvmContext = allocWords(t, r, 3+128)
+	frame := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	var encoded bytes.Buffer
+	check(t, png.Encode(&encoded, frame))
+	asset, err := r.Services.Assets.Decode(r.ServiceOwner, encoded.Bytes(), shared.DecodeOptions{})
+	check(t, err)
+	check(t, r.Services.Assets.Retain(r.ServiceOwner, asset))
+	info, err := r.Services.Assets.Info(r.ServiceOwner, asset)
+	check(t, err)
+	surface := info.Frames[0].Surface
+
+	dead, err := r.newJavaImage(frame)
+	check(t, err)
+	live, err := r.newJavaImage(frame)
+	check(t, err)
+	for _, instance := range []uint32{dead, live} {
+		r.imageServices[instance] = surface
+		r.javaAssetServices[instance] = asset
+	}
+
+	check(t, r.CPU.WriteRegister(cpu.RegisterR8, live))
+	r.CollectJavaHeapForTest()
+	if r.javaAssetServices[dead] != 0 || r.javaAssetServices[live] != asset {
+		t.Fatal("collection failed to drop just the dead image's asset reference")
+	}
+	_, err = r.Services.Graphics.Descriptor(r.ServiceOwner, surface)
+	check(t, err)
+
+	check(t, r.CPU.WriteRegister(cpu.RegisterR8, 0))
+	r.CollectJavaHeapForTest()
+	if _, err := r.Services.Assets.Info(r.ServiceOwner, asset); err == nil {
+		t.Fatal("asset survived after its last image was collected")
+	}
+	if _, err := r.Services.Graphics.Descriptor(r.ServiceOwner, surface); err == nil {
+		t.Fatal("asset-owned surface survived after its last image was collected")
+	}
+}
 
 // TestKTFJavaImagesDoNotTakeASurfaceUntilDrawnThrough covers what random key
 // input found on 다이하드4: newJavaImage gave every Image a mirrored service

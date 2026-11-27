@@ -32,43 +32,8 @@ func decodeImageAsset(
 		(mediaType == "" && len(encoded) >= 6 &&
 			(string(encoded[:6]) == "GIF87a" || string(encoded[:6]) == "GIF89a"))
 	if isGIF {
-		config, err := gif.DecodeConfig(bytes.NewReader(encoded))
+		animation, err := DecodeGIF(encoded, limits)
 		if err != nil {
-			return nil, nil, 0, "", fmt.Errorf("%w: decode GIF config: %v", ErrInvalidArgument, err)
-		}
-		frameCount, err := inspectGIFFrames(
-			encoded,
-			config.Width,
-			config.Height,
-			limits,
-		)
-		if err != nil {
-			return nil, nil, 0, "", err
-		}
-		if err := validateDecodedGeometry(
-			config.Width,
-			config.Height,
-			frameCount,
-			limits,
-		); err != nil {
-			return nil, nil, 0, "", err
-		}
-		animation, err := gif.DecodeAll(bytes.NewReader(encoded))
-		if err != nil {
-			return nil, nil, 0, "", fmt.Errorf("%w: decode GIF: %v", ErrInvalidArgument, err)
-		}
-		if len(animation.Image) != frameCount {
-			return nil, nil, 0, "", fmt.Errorf(
-				"%w: GIF frame count changed during decode",
-				ErrInvalidArgument,
-			)
-		}
-		if err := validateDecodedGeometry(
-			animation.Config.Width,
-			animation.Config.Height,
-			len(animation.Image),
-			limits,
-		); err != nil {
 			return nil, nil, 0, "", err
 		}
 		frames := compositeGIF(animation)
@@ -108,6 +73,36 @@ func decodeImageAsset(
 		return nil, nil, 0, "", fmt.Errorf("%w: decode image: %v", ErrInvalidArgument, err)
 	}
 	return []image.Image{decoded}, []time.Duration{0}, 0, "image/" + strings.ToLower(format), nil
+}
+
+// DecodeGIF checks the encoded size, frame count and decoded geometry before
+// allocating pixels. It preserves the frame rectangles and palettes.
+func DecodeGIF(encoded []byte, limits AssetLimits) (*gif.GIF, error) {
+	if uint64(len(encoded)) > limits.MaxEncodedBytes {
+		return nil, fmt.Errorf("%w: encoded GIF exceeds byte limit", ErrLimitExceeded)
+	}
+	config, err := gif.DecodeConfig(bytes.NewReader(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("%w: decode GIF config: %v", ErrInvalidArgument, err)
+	}
+	frameCount, err := inspectGIFFrames(encoded, config.Width, config.Height, limits)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateDecodedGeometry(config.Width, config.Height, frameCount, limits); err != nil {
+		return nil, err
+	}
+	animation, err := gif.DecodeAll(bytes.NewReader(encoded))
+	if err != nil {
+		return nil, fmt.Errorf("%w: decode GIF: %v", ErrInvalidArgument, err)
+	}
+	if len(animation.Image) != frameCount {
+		return nil, fmt.Errorf("%w: GIF frame count changed during decode", ErrInvalidArgument)
+	}
+	if err := validateDecodedGeometry(animation.Config.Width, animation.Config.Height, len(animation.Image), limits); err != nil {
+		return nil, err
+	}
+	return animation, nil
 }
 
 // decodeLBMP decodes the little-endian LCD bitmap format used by SKVM.

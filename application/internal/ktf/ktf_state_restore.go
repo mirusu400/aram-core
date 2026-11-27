@@ -947,6 +947,7 @@ func restoreKTFImagesAndGraphics(
 	pixels map[uint32]*image.RGBA,
 ) error {
 	r.blitCaches = nil
+	r.javaImageBytesSinceGC = 0
 	r.images = make(map[uint32]image.Image, len(meta.Images))
 	for _, object := range meta.Images {
 		if carried := pixels[object]; carried != nil {

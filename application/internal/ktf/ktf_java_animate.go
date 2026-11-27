@@ -1,11 +1,11 @@
 package ktf
 
 import (
-	"bytes"
 	"image"
-	"image/gif"
 	"path"
 	"strings"
+
+	shared "github.com/mirusu400/aram-core/runtime"
 )
 
 type ktfAnimateImage struct {
@@ -90,18 +90,16 @@ func (r *Runtime) handleAnimateImageMethod(name, descriptor string) (uint32, err
 		if err != nil {
 			return 0, err
 		}
-		if frameCount <= 0 || width <= 0 || height <= 0 {
+		limits := r.Services.Config.Limits
+		if frameCount <= 0 || width <= 0 || height <= 0 ||
+			uint64(frameCount) > uint64(limits.Assets.MaxFrames) ||
+			width > int(limits.Graphics.MaxWidth) || height > int(limits.Graphics.MaxHeight) ||
+			uint64(width)*uint64(height) > limits.Assets.MaxDecodedBytes/4/uint64(frameCount) {
 			return 0, r.raiseHostJavaException("java/lang/IllegalArgumentException")
 		}
-		frames := make([]uint32, frameCount)
-		for index := range frames {
-			frame, valueErr := r.newJavaImage(image.NewRGBA(image.Rect(0, 0, width, height)))
-			if valueErr != nil {
-				return 0, valueErr
-			}
-			frames[index] = frame
-		}
-		return r.newKTFAnimateImage(frames, width, height, true, "")
+		return r.newKTFAnimateImage(frameCount, width, height, true, "", func(int) (uint32, error) {
+			return r.newJavaImage(image.NewRGBA(image.Rect(0, 0, width, height)))
+		})
 	case "stopImage(Lorg/kwis/msp/lcdui/ImageObserver;)V":
 		observer, err := r.parameter(1)
 		if err != nil {
@@ -273,15 +271,29 @@ func (r *Runtime) handleAnimateImageMethod(name, descriptor string) (uint32, err
 	return 0, nil
 }
 
-func (r *Runtime) newKTFAnimateImage(frames []uint32, width, height int, mutable bool, mediaType string) (uint32, error) {
+func (r *Runtime) newKTFAnimateImage(
+	frameCount, width, height int, mutable bool, mediaType string, createFrame func(int) (uint32, error),
+) (uint32, error) {
 	instance, err := r.newJavaInstance("org/kwis/msp/lcdui/AnimateImage", 0)
 	if err != nil {
 		return 0, err
 	}
-	r.animateImages[instance] = &ktfAnimateImage{
-		frames: append([]uint32(nil), frames...),
-		rates:  make([]int32, len(frames)), width: int32(width), height: int32(height),
+	animated := &ktfAnimateImage{
+		frames: make([]uint32, frameCount),
+		rates:  make([]int32, frameCount), width: int32(width), height: int32(height),
 		mutable: mutable, mediaType: mediaType,
+	}
+	r.animateImages[instance] = animated
+	// A frame can trigger collection before the guest has received the image.
+	r.constructingAnimateImage = instance
+	defer func() { r.constructingAnimateImage = 0 }()
+	for index := range animated.frames {
+		frame, err := createFrame(index)
+		if err != nil {
+			delete(r.animateImages, instance)
+			return 0, err
+		}
+		animated.frames[index] = frame
 	}
 	return instance, nil
 }
@@ -292,39 +304,39 @@ func (r *Runtime) newKTFAnimateImageResource(resourceName string) (uint32, error
 	if !found {
 		return 0, r.raiseHostJavaException("java/io/IOException")
 	}
-	var frames []uint32
-	var rates []int32
-	width, height := 0, 0
 	mediaType := animateImageMediaType(name)
-	if decoded, err := gif.DecodeAll(bytes.NewReader(data)); err == nil && len(decoded.Image) != 0 {
-		width, height = decoded.Config.Width, decoded.Config.Height
-		for index, source := range decoded.Image {
-			frame, valueErr := r.newJavaImage(source)
-			if valueErr != nil {
-				return 0, valueErr
-			}
-			frames = append(frames, frame)
-			delay := int32(0)
-			if index < len(decoded.Delay) {
-				delay = int32(decoded.Delay[index] * 10)
-			}
-			rates = append(rates, delay)
-		}
-	} else {
-		frame, valueErr := r.newJavaEncodedImage(data)
-		if valueErr != nil {
+	if len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a") {
+		decoded, err := shared.DecodeGIF(data, r.Services.Config.Limits.Assets)
+		if err != nil {
 			return 0, r.raiseHostJavaException("java/io/IOException")
 		}
-		frames = []uint32{frame}
-		source := r.images[frame]
-		width, height = source.Bounds().Dx(), source.Bounds().Dy()
-		rates = []int32{0}
+		instance, err := r.newKTFAnimateImage(
+			len(decoded.Image), decoded.Config.Width, decoded.Config.Height, false, mediaType,
+			func(index int) (uint32, error) { return r.newJavaImage(decoded.Image[index]) },
+		)
+		if err != nil {
+			return 0, err
+		}
+		for index, delay := range decoded.Delay {
+			r.animateImages[instance].rates[index] = int32(delay * 10)
+		}
+		return instance, nil
 	}
-	instance, err := r.newKTFAnimateImage(frames, width, height, false, mediaType)
-	if err == nil {
-		r.animateImages[instance].rates = rates
+
+	instance, err := r.newKTFAnimateImage(1, 0, 0, false, mediaType, func(int) (uint32, error) {
+		frame, err := r.newJavaEncodedImage(data)
+		if err != nil {
+			return 0, r.raiseHostJavaException("java/io/IOException")
+		}
+		return frame, nil
+	})
+	if err != nil {
+		return 0, err
 	}
-	return instance, err
+	animated := r.animateImages[instance]
+	bounds := r.images[animated.frames[0]].Bounds()
+	animated.width, animated.height = int32(bounds.Dx()), int32(bounds.Dy())
+	return instance, nil
 }
 
 func animateImageMediaType(name string) string {

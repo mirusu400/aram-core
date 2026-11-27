@@ -464,13 +464,35 @@ func (r *Runtime) newJavaImageResource(nameAddress uint32) (uint32, error) {
 	return instance, nil
 }
 
+// Image pixels live on the host while the guest only allocates a small object.
+// Give their growth a separate collection trigger before the guest heap fills.
+const ktfJavaImageCollectionBytes = 32 << 20
+
 func (r *Runtime) newJavaImage(source image.Image) (uint32, error) {
+	if r.javaImageBytesSinceGC >= ktfJavaImageCollectionBytes {
+		r.collectJavaHeap()
+	}
 	instance, err := r.newJavaInstance("org/kwis/msp/lcdui/Image", 8)
 	if err != nil {
 		return 0, err
 	}
 	r.images[instance] = source
+	bounds := source.Bounds()
+	r.javaImageBytesSinceGC += uint64(bounds.Dx()) * uint64(bounds.Dy()) * 4
 	return instance, nil
+}
+
+func (r *Runtime) releaseUnreachableJavaImageServices(dead func(uint32) bool) {
+	for instance := range r.imageServices {
+		if dead(instance) {
+			r.dropJavaImageSurface(instance)
+		}
+	}
+	for instance, asset := range r.javaAssetServices {
+		if dead(instance) {
+			_ = r.Services.Assets.Release(r.ServiceOwner, asset)
+		}
+	}
 }
 
 // ktfJavaImageSurfaceBudget is how many Image mirrors this runtime keeps. The
@@ -573,14 +595,9 @@ func (r *Runtime) evictJavaImageSurfaces(keep uint32) {
 	}
 	evicted := make(map[shared.ServiceID]bool, drop)
 	for _, instance := range candidates[:drop] {
-		surface := r.imageServices[instance]
-		delete(r.imageServices, instance)
-		delete(r.imageSurfaceUse, instance)
-		if surface == 0 {
-			continue
+		if surface := r.dropJavaImageSurface(instance); surface != 0 {
+			evicted[surface] = true
 		}
-		evicted[surface] = true
-		_ = r.Services.Graphics.DestroySurface(r.ServiceOwner, surface)
 	}
 	if len(evicted) == 0 {
 		return
@@ -592,6 +609,28 @@ func (r *Runtime) evictJavaImageSurfaces(keep uint32) {
 	}
 	r.tracef("java_image_surface_evict:dropped=%d:live=%d",
 		drop, len(r.imageServices))
+}
+
+func (r *Runtime) dropJavaImageSurface(instance uint32) shared.ServiceID {
+	surface := r.imageServices[instance]
+	delete(r.imageServices, instance)
+	delete(r.imageSurfaceUse, instance)
+	if surface == 0 {
+		return 0
+	}
+	// Older save states can use a shared asset's frame as the mirror. That
+	// surface lives until the asset's last owner releases it.
+	if asset := r.javaAssetServices[instance]; asset != 0 {
+		if info, err := r.Services.Assets.Info(r.ServiceOwner, asset); err == nil {
+			for _, frame := range info.Frames {
+				if frame.Surface == surface {
+					return 0
+				}
+			}
+		}
+	}
+	_ = r.Services.Graphics.DestroySurface(r.ServiceOwner, surface)
+	return surface
 }
 
 // keyOutMagentaCorner drops the transparency a decoded Java Image asset
@@ -663,12 +702,11 @@ func (r *Runtime) newJavaEncodedImage(data []byte) (uint32, error) {
 	))
 	copy(source.Pix, pixels)
 	keyOutMagentaCorner(source)
-	instance, err := r.newJavaInstance("org/kwis/msp/lcdui/Image", 8)
+	instance, err := r.newJavaImage(source)
 	if err != nil {
 		_ = r.Services.Assets.Release(r.ServiceOwner, asset)
 		return 0, err
 	}
-	r.images[instance] = source
 	// The decoded pixels are copied out above, so the asset and the surface it
 	// owns have no further reader. Holding them was one surface and one asset
 	// per decoded image, for the lifetime of the title.
@@ -1040,13 +1078,8 @@ func (r *Runtime) drawKTFJavaImageFast(
 // r.images), so there is nothing to key a cache on; every ordinary draw path
 // reaches here only after r.images[imageAddress] resolved to source.
 //
-// The cache carries no host resource - it is a plain Go byte slice derived
-// entirely from source's own pixels - so it holds the same strength as
-// r.images itself: not a weak table (see weakTables' comment on why images
-// stay strong), evicted only by explicit invalidation, never by the
-// collector. A dimension mismatch is a defensive fallback for an address
-// reused without invalidation reaching us; the real invalidation path is
-// invalidateKTFBlitCache, called everywhere a Graphics writes into an Image.
+// The cache is derived entirely from the source's pixels. Collection drops
+// it with the image, and invalidateKTFBlitCache drops it when pixels change.
 func (r *Runtime) ensureKTFBlitCache(
 	imageAddress uint32,
 	source *image.NRGBA,
