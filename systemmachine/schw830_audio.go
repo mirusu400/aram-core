@@ -645,7 +645,13 @@ func (d *schw830AudioCommandWindow) LoadState(state []byte) error {
 func (m *Machine) DrainAudio() core.AudioChunk {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed.Load() || m.audio == nil {
+	if m.closed.Load() {
+		return core.AudioChunk{}
+	}
+	if m.dspAudio != nil {
+		return m.dspAudio.DrainAudio()
+	}
+	if m.audio == nil {
 		return core.AudioChunk{}
 	}
 	return m.audio.drain()

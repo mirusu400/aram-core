@@ -405,6 +405,7 @@ type Machine struct {
 	gpioInputs     *system.QualcommInterruptController
 	gpioInputKeys  map[string]system.QualcommGPIOInputKeyProfile
 	audio          *schw830Audio
+	dspAudio       *system.QualcommAudioDSP
 	controls       []string
 
 	resetCPUState            []byte
@@ -1165,8 +1166,10 @@ func newSamsungQualcommMachine(
 	); err != nil {
 		return fail(err)
 	}
-	if board.GraphicsDSP != nil {
-		if err := board.AttachGraphicsDSP(bus, vectoredInterrupts); err != nil {
+	var dspAudio *system.QualcommAudioDSP
+	if board.GraphicsDSP != nil || board.AudioDSP != nil {
+		dspAudio, err = board.AttachDSPModules(bus, vectoredInterrupts)
+		if err != nil {
 			return fail(err)
 		}
 	}
@@ -1191,6 +1194,9 @@ func newSamsungQualcommMachine(
 	clockedDevices := bus.ClockedDevices()
 	if audio != nil {
 		clockedDevices = append(clockedDevices, audio)
+	}
+	if dspAudio != nil {
+		clockedDevices = append(clockedDevices, dspAudio)
 	}
 	var executionRunner system.ExecutionRunner = backend
 	if len(board.HLECalls) != 0 {
@@ -1236,7 +1242,7 @@ func newSamsungQualcommMachine(
 		oneNANDSpare: oneNANDSpare,
 		panel:        dcsPanelController, mdp: mdp, panelProbe: panelProbe, keypad: keypad, touchscreen: touchscreen,
 		vectoredIRQs: vectoredInterrupts,
-		primaryClock: primaryClock, primaryKeys: boardPrimaryClockKeys(board), audio: audio,
+		primaryClock: primaryClock, primaryKeys: boardPrimaryClockKeys(board), audio: audio, dspAudio: dspAudio,
 		gpioInputs: legacyInterrupts, gpioInputKeys: boardGPIOInputKeys(board),
 		controls:                 boardControls(board),
 		resetCPUState:            append([]byte(nil), resetCPUState...),
@@ -4536,6 +4542,9 @@ func (m *Machine) powerCycleLocked() error {
 			return err
 		}
 	}
+	if m.dspAudio != nil {
+		m.dspAudio.Restart(0)
+	}
 	if err := m.backend.RestoreContext(m.resetCPUState); err != nil {
 		return fmt.Errorf("restore reset CPU state: %w", err)
 	}
@@ -4836,6 +4845,9 @@ func (m *Machine) LoadSnapshot(snapshot Snapshot) error {
 			rollback()
 			return err
 		}
+	}
+	if m.dspAudio != nil {
+		m.dspAudio.Restart(snapshot.Instructions)
 	}
 	m.bootBoundaryLeft = 0
 	if snapshot.Instructions < m.bootBoundary.instructions {

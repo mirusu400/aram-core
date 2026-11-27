@@ -592,6 +592,7 @@ type BoardProfile struct {
 	Memory                                    []MemoryRegionProfile
 	MemoryWriteResponses                      []MemoryWriteResponseProfile
 	GraphicsDSP                               *QualcommGraphicsDSPProfile
+	AudioDSP                                  *QualcommAudioDSPProfile
 	ReadOnlyRegisters                         []ReadOnlyRegisterProfile
 	LatchedRegisters                          []LatchedRegisterProfile
 	LatchedRegisterWindows                    []LatchedRegisterWindowProfile
@@ -1204,6 +1205,14 @@ func (p BoardProfile) Validate() error {
 		}
 		if p.VectoredInterrupt == nil {
 			return fmt.Errorf("Qualcomm graphics DSP needs a vectored interrupt controller")
+		}
+	}
+	if p.AudioDSP != nil {
+		if err := p.AudioDSP.validate(p.Memory); err != nil {
+			return err
+		}
+		if p.VectoredInterrupt == nil {
+			return fmt.Errorf("Qualcomm audio DSP needs a vectored interrupt controller")
 		}
 	}
 	responses := make(map[memoryResponseKey]struct{}, len(p.MemoryWriteResponses))
@@ -3638,6 +3647,21 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 		PrivateStateOffset: 0x07f00000,
 		// Application-DSP interrupt 0 is child bit 0 of compact-VIC group 11.
 		InterruptGroupStatusOffset: 0x84, InterruptGroupMask: 0x01,
+	}
+	// The same image plays wave data: qdsp_cmd opens one of four channels
+	// with command 0x320 and lends each encoded buffer through the channel
+	// blocks at +0x202400. Its service routine accepts a data request when
+	// +0x202528 is set and the reason word +0x7056 reads 0x311.
+	profile.AudioDSP = &QualcommAudioDSPProfile{
+		MemoryID:      "adsp-address-space",
+		CommandOffset: 0x00201f92, ArgumentOffset: 0x00201f94,
+		ChannelOffset: 0x00202400, ChannelStride: 0x4a, Channels: 4,
+		ServiceOffset: 0x00202528, EventOffset: 0x00007056, EventValue: 0x0311,
+		ControlFlagOffset: 0x00006ec8, ControlFlags: 5,
+		PrivateStateOffset:         0x07e00000,
+		InterruptGroupStatusOffset: 0x84, InterruptGroupMask: 0x01,
+		InstructionsPerSecond: 60_000_000,
+		OutputSampleRate:      32000,
 	}
 	// DC17's QDSP command queue submits its shared-buffer address through the
 	// mailbox write-control word itself. The mailbox clears the hardware mutex
