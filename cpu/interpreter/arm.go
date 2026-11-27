@@ -406,6 +406,13 @@ func (b *Backend) stepARM() (*cpu.StopReason, error) {
 		}
 		return nil, nil
 
+	case isARMDSP(instruction): // ARMv5TE saturating arithmetic and 16-bit multiplies
+		if !armDSPOperandsValid(instruction) {
+			return nil, b.unsupportedARM(pc, instruction)
+		}
+		b.executeARMDSP(instruction)
+		return nil, nil
+
 	// PSR transfers occupy the data-processing opcode space 10xx with S clear,
 	// so they only have to be decoded ahead of data processing itself. Testing
 	// them here instead of at the top of the chain keeps three mask compares
