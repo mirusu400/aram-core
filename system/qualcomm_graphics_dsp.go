@@ -110,6 +110,7 @@ type QualcommGraphicsDSP struct {
 	profile   QualcommGraphicsDSPProfile
 	base      uint32
 	interrupt QualcommGraphicsDSPInterrupt
+	scratch   qualcommGraphicsScratch
 }
 
 func newQualcommGraphicsDSP(
@@ -212,7 +213,7 @@ func (d *QualcommGraphicsDSP) command(dsp qualcommGraphicsDSPMemory) {
 	}
 	address := dsp.read32(d.profile.ArrayAddressOffset)
 	size := int(dsp.read16(d.profile.ArraySizeOffset))
-	var state qualcommGraphicsState
+	state := qualcommGraphicsState{scratch: &d.scratch}
 	state.load(dsp, d.profile.PrivateStateOffset)
 	var events []uint16
 	array := make([]byte, size)

@@ -194,3 +194,29 @@ func TestGRPGeometryTransformsLightsClipsAndCulls(t *testing.T) {
 		t.Fatalf("0.5^2.5 = %v", value)
 	}
 }
+
+func TestGRPGeometryBoundsTheRowsABatchCanCover(t *testing.T) {
+	geometry := &grpGeometryState{
+		windowScale:  [3]float64{120, -55, -32767},
+		windowOffset: [3]float64{121, 119, 32767},
+	}
+	vertex := func(y, z, w float64) grpClipVertex { return grpClipVertex{clip: grpVec4{0, y, z, w}} }
+	low, high, bounded := geometry.windowRows([]grpClipVertex{vertex(1, 0, 2), vertex(-2, 0, 2), vertex(0, 0, 1)})
+	// ndc y in [-1, 0.5] maps to rows 91.5 .. 174.
+	if !bounded || low != 91 || high != 175 {
+		t.Fatalf("row bound = [%d, %d) bounded %t", low, high, bounded)
+	}
+	for name, vertices := range map[string][]grpClipVertex{
+		"behind the eye":        {vertex(0, 0, 1), vertex(0, 0, -1)},
+		"on the eye plane":      {vertex(0, 0, 0)},
+		"before the near plane": {vertex(0, -2, 1)},
+		"absurdly far away":     {vertex(1e9, 0, 1)},
+	} {
+		if _, _, bounded := geometry.windowRows(vertices); bounded {
+			t.Errorf("%s: batch was given a row bound", name)
+		}
+	}
+	if low, high, bounded := geometry.windowRows(nil); !bounded || low != high {
+		t.Fatalf("empty batch bound = [%d, %d) %t", low, high, bounded)
+	}
+}

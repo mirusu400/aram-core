@@ -352,6 +352,34 @@ func (g *grpGeometryState) toWindow(v *grpClipVertex) grpVertex {
 	}
 }
 
+// windowRows bounds the surface rows a batch of shaded vertices can cover as
+// [low, high). It declines when a vertex is on or behind the eye plane, where
+// the projection gives no bound.
+func (g *grpGeometryState) windowRows(vertices []grpClipVertex) (int, int, bool) {
+	if len(vertices) == 0 {
+		return 0, 0, true
+	}
+	minimum, maximum := 0.0, 0.0
+	for index := range vertices {
+		clip := &vertices[index].clip
+		if clip[3] <= 0 || clip[2] < -clip[3] {
+			return 0, 0, false
+		}
+		y := g.windowOffset[1] + grpMul(clip[1]/clip[3], g.windowScale[1])
+		if index == 0 || y < minimum {
+			minimum = y
+		}
+		if index == 0 || y > maximum {
+			maximum = y
+		}
+	}
+	const limit = 1 << 20
+	if minimum < -limit || maximum > limit {
+		return 0, 0, false
+	}
+	return grpFloor(minimum), grpFloor(maximum) + 1, true
+}
+
 // drawTriangle clips, culls and rasterises one triangle of shaded vertices.
 func (g *grpGeometryState) drawTriangle(
 	surface *grpSurface,

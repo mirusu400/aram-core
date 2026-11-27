@@ -201,6 +201,38 @@ func TestQualcommGraphicsDSPDrawsDepthTestedTriangles(t *testing.T) {
 	if stamp := h.read(0x7000020c, Width32); stamp != 4 {
 		t.Fatalf("completion stamp = %d", stamp)
 	}
+
+	// A scissored depth clear (marker 34) reopens only its rectangle: the
+	// far red quad then wins inside it and still loses outside it. The row
+	// of a draw that does not reach a pixel is neither read nor written.
+	clear := newGRPArray(5)
+	fragment := clear.record(grpOpFragment)
+	clear.put16(fragment, 2, 1)
+	clear.put16(fragment, 6, 4)
+	clear.put16(fragment, 14, 5)
+	clear.put16(fragment, 18, 2) // x0
+	clear.put16(fragment, 20, 4) // y0
+	clear.put16(fragment, 22, 3) // rows 4..7
+	clear.put16(fragment, 24, 3) // columns 2..5
+	clear.marker(grpMarkerClearDepthScissored)
+	h.submit(0x00020000, clear.bytes())
+	far := newGRPArray(6)
+	full := far.record(grpOpFragment)
+	far.put16(full, 2, 1)
+	far.put16(full, 6, 4)
+	far.put16(full, 14, 5)
+	far.put16(full, 22, grpTestSide-1)
+	far.put16(full, 24, grpTestSide-1)
+	far.current(0xffff, 0, 0)
+	far.draw(h, 7, [][3]float64{{-1, 0, 0.5}, {1, 0, 0.5}, {-1, 1, 0.5}, {1, 1, 0.5}})
+	h.submit(0x00020000, far.bytes())
+	if h.pixel(3, 5) != 0xf800 || h.pixel(3, 2) != 0xffff || h.pixel(6, 5) != 0xffff {
+		t.Fatalf("after scissored depth clear: inside %#04x above %#04x beside %#04x",
+			h.pixel(3, 5), h.pixel(3, 2), h.pixel(6, 5))
+	}
+	if h.pixel(3, 12) != 0xffff {
+		t.Fatalf("row below the batch changed to %#04x", h.pixel(3, 12))
+	}
 }
 
 func TestQualcommGraphicsDSPAnswersEachSyncMarkerOnce(t *testing.T) {

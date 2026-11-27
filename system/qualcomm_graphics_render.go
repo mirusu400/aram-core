@@ -76,7 +76,27 @@ var qualcommGraphicsRecordSize = [qualcommGraphicsRegisterSlots]uint8{
 	grpOpLight: 76, grpOpTextureMatrix: 68,
 }
 
+// qualcommGraphicsScratch is host-side working memory reused between command
+// arrays. Nothing in it survives as machine state: the surface buffers are
+// reloaded from guest memory for every array, and a cached texture is only
+// reused when the guest bytes it was decoded from are unchanged.
+type qualcommGraphicsScratch struct {
+	color    []uint16
+	depth    []uint16
+	row      []byte
+	textures [4]grpCachedTexture
+	next     int
+}
+
+type grpCachedTexture struct {
+	address uint32
+	layout  uint64
+	raw     []byte
+	texture *grpTexture
+}
+
 type qualcommGraphicsState struct {
+	scratch    *qualcommGraphicsScratch
 	eventIndex uint16
 	registers  [qualcommGraphicsRegisterSlots][qualcommGraphicsRegisterSlotSize]byte
 	lights     [qualcommGraphicsLightSlots][qualcommGraphicsRegisterSlotSize]byte
@@ -224,7 +244,9 @@ type grpTarget struct {
 	row0    int
 	row1    int
 	loaded  bool
-	dirty   bool
+	// dirty and depthDirty record which buffers a draw may have written.
+	dirty      bool
+	depthDirty bool
 }
 
 func (s *qualcommGraphicsState) target() (grpTarget, bool) {
@@ -272,50 +294,83 @@ func (s *qualcommGraphicsState) scissor(width, height int) [4]int {
 	return [4]int{x0, y0, x1, y1}
 }
 
-// open loads the colour and depth rows [row0, row1) of the target.
-func (t *grpTarget) open(dsp qualcommGraphicsDSPMemory, private uint32, row0, row1 int) {
+// open loads the colour and depth rows [row0, row1) of the target, each as
+// one block.
+func (t *grpTarget) open(
+	dsp qualcommGraphicsDSPMemory,
+	scratch *qualcommGraphicsScratch,
+	private uint32,
+	row0, row1 int,
+) {
 	if t.loaded || row0 >= row1 {
 		return
 	}
 	surface := &t.surface
-	surface.color = make([]uint16, surface.width*surface.height)
-	surface.depth = make([]uint16, surface.width*surface.height)
+	pixels := surface.width * surface.height
+	if cap(scratch.color) < pixels {
+		scratch.color = make([]uint16, pixels)
+		scratch.depth = make([]uint16, pixels)
+	}
+	// Rows outside [row0, row1) keep whatever an earlier array left there;
+	// the scissor confines every read and write to the loaded rows.
+	surface.color, surface.depth = scratch.color[:pixels], scratch.depth[:pixels]
 	t.row0, t.row1 = row0, row1
-	raw := make([]byte, surface.width*2)
-	for y := row0; y < row1; y++ {
-		line := surface.color[y*surface.width : (y+1)*surface.width]
-		if dsp.memory.ReadMemory(t.address+uint32(y*t.stride), raw) {
+	rows := row1 - row0
+	raw := scratch.block(rows * t.stride)
+	if dsp.memory.ReadMemory(t.address+uint32(row0*t.stride), raw[:(rows-1)*t.stride+surface.width*2]) {
+		for y := 0; y < rows; y++ {
+			line := surface.color[(row0+y)*surface.width : (row0+y+1)*surface.width]
+			source := raw[y*t.stride:]
 			for x := range line {
-				line[x] = binary.LittleEndian.Uint16(raw[x*2:])
+				line[x] = binary.LittleEndian.Uint16(source[x*2:])
 			}
 		}
-		depth := surface.depth[y*surface.width : (y+1)*surface.width]
-		if dsp.memory.ReadMemory(dsp.base+private+qualcommGraphicsDepthBase+uint32(y*surface.width*2), raw) {
-			for x := range depth {
-				depth[x] = binary.LittleEndian.Uint16(raw[x*2:])
-			}
+	}
+	raw = scratch.block(rows * surface.width * 2)
+	if dsp.memory.ReadMemory(t.depthAddress(dsp, private, row0), raw) {
+		depth := surface.depth[row0*surface.width : row1*surface.width]
+		for index := range depth {
+			depth[index] = binary.LittleEndian.Uint16(raw[index*2:])
 		}
 	}
 	t.loaded = true
 }
 
-// close writes the loaded rows back.
-func (t *grpTarget) close(dsp qualcommGraphicsDSPMemory, private uint32) {
-	if !t.loaded || !t.dirty {
+func (t *grpTarget) depthAddress(dsp qualcommGraphicsDSPMemory, private uint32, row int) uint32 {
+	return dsp.base + private + qualcommGraphicsDepthBase + uint32(row*t.surface.width*2)
+}
+
+// close writes back what the array changed in the loaded rows.
+func (t *grpTarget) close(dsp qualcommGraphicsDSPMemory, scratch *qualcommGraphicsScratch, private uint32) {
+	if !t.loaded {
 		return
 	}
 	surface := &t.surface
-	raw := make([]byte, surface.width*2)
-	for y := t.row0; y < t.row1; y++ {
-		for x, pixel := range surface.color[y*surface.width : (y+1)*surface.width] {
-			binary.LittleEndian.PutUint16(raw[x*2:], pixel)
+	rows := t.row1 - t.row0
+	if t.dirty {
+		// Only the pixel bytes are written; any stride padding is the ARM's.
+		raw := scratch.block(surface.width * 2)
+		for y := t.row0; y < t.row1; y++ {
+			for x, pixel := range surface.color[y*surface.width : (y+1)*surface.width] {
+				binary.LittleEndian.PutUint16(raw[x*2:], pixel)
+			}
+			dsp.memory.WriteMemory(t.address+uint32(y*t.stride), raw)
 		}
-		dsp.memory.WriteMemory(t.address+uint32(y*t.stride), raw)
-		for x, depth := range surface.depth[y*surface.width : (y+1)*surface.width] {
-			binary.LittleEndian.PutUint16(raw[x*2:], depth)
-		}
-		dsp.memory.WriteMemory(dsp.base+private+qualcommGraphicsDepthBase+uint32(y*surface.width*2), raw)
 	}
+	if t.depthDirty {
+		raw := scratch.block(rows * surface.width * 2)
+		for index, depth := range surface.depth[t.row0*surface.width : t.row1*surface.width] {
+			binary.LittleEndian.PutUint16(raw[index*2:], depth)
+		}
+		dsp.memory.WriteMemory(t.depthAddress(dsp, private, t.row0), raw)
+	}
+}
+
+func (s *qualcommGraphicsScratch) block(size int) []byte {
+	if cap(s.row) < size {
+		s.row = make([]byte, size)
+	}
+	return s.row[:size]
 }
 
 // execute runs one command array and returns the events it owes the ARM, in
@@ -357,7 +412,7 @@ func (s *qualcommGraphicsState) execute(dsp qualcommGraphicsDSPMemory, private u
 		case grpMarkerClearDepthScissored:
 			s.clearDepth(dsp, private, &target, s.scissor(target.surface.width, target.surface.height))
 		}
-		target.close(dsp, private)
+		target.close(dsp, s.scratch, private)
 	}
 	switch marker {
 	case 0, grpMarkerClearDepth, grpMarkerClearDepthScissored,
@@ -383,18 +438,26 @@ func (s *qualcommGraphicsState) clearDepth(
 	if rectangle[0] >= rectangle[2] || rectangle[1] >= rectangle[3] {
 		return
 	}
-	target.open(dsp, private, rectangle[1], rectangle[3])
-	if rectangle[1] < target.row0 || rectangle[3] > target.row1 {
-		return
-	}
-	value := s.u16(grpOpClearValues, 2)
-	for y := rectangle[1]; y < rectangle[3]; y++ {
-		row := target.surface.depth[y*target.surface.width:]
-		for x := rectangle[0]; x < rectangle[2]; x++ {
-			row[x] = value
+	// The clear follows any draw of the same array, so write that back first
+	// and then store the cleared rows directly.
+	target.close(dsp, s.scratch, private)
+	target.loaded, target.dirty, target.depthDirty = false, false, false
+	width := target.surface.width
+	rows := rectangle[3] - rectangle[1]
+	raw := s.scratch.block(rows * width * 2)
+	address := target.depthAddress(dsp, private, rectangle[1])
+	if rectangle[0] != 0 || rectangle[2] != width {
+		if !dsp.memory.ReadMemory(address, raw) {
+			return
 		}
 	}
-	target.dirty = true
+	value := s.u16(grpOpClearValues, 2)
+	for y := 0; y < rows; y++ {
+		for x := rectangle[0]; x < rectangle[2]; x++ {
+			binary.LittleEndian.PutUint16(raw[(y*width+x)*2:], value)
+		}
+	}
+	dsp.memory.WriteMemory(address, raw)
 }
 
 func (s *qualcommGraphicsState) geometry() *grpGeometryState {
@@ -554,11 +617,28 @@ func (s *qualcommGraphicsState) texture(dsp qualcommGraphicsDSPMemory) *grpTextu
 		rows = 4
 	}
 	strips := (width + 3) / 4
-	raw := make([]byte, strips*rows*8)
+	format := s.u16(grpOpTexture, 4)
+	layout := uint64(format) | uint64(widthLog)<<16 | uint64(heightLog)<<24 |
+		uint64(s.u16(grpOpTexture, 10))<<32 | uint64(s.u16(grpOpTexture, 20))<<40 |
+		uint64(s.u16(grpOpTexture, 22))<<48
+	// The texel bytes are read every time; only the decode is reused, and only
+	// when address, layout and every byte match.
+	slot := &s.scratch.textures[s.scratch.next]
+	for index := range s.scratch.textures {
+		if cached := &s.scratch.textures[index]; cached.texture != nil &&
+			cached.address == address && cached.layout == layout {
+			slot = cached
+			break
+		}
+	}
+	size := strips * rows * 8
+	raw := make([]byte, size)
 	if !dsp.memory.ReadMemory(address, raw) {
 		return nil
 	}
-	format := s.u16(grpOpTexture, 4)
+	if slot.texture != nil && slot.address == address && slot.layout == layout && string(slot.raw) == string(raw) {
+		return slot.texture
+	}
 	texture := &grpTexture{
 		width: width, height: height,
 		texels:     make([]grpColor, width*height),
@@ -591,6 +671,11 @@ func (s *qualcommGraphicsState) texture(dsp qualcommGraphicsDSPMemory) *grpTextu
 			texture.texels[y*width+x] = color
 		}
 	}
+	if slot.texture == nil || slot.address != address || slot.layout != layout {
+		slot = &s.scratch.textures[s.scratch.next]
+		s.scratch.next = (s.scratch.next + 1) % len(s.scratch.textures)
+	}
+	*slot = grpCachedTexture{address: address, layout: layout, raw: raw, texture: texture}
 	return texture
 }
 
@@ -716,14 +801,6 @@ func (s *qualcommGraphicsState) draw(
 	if fragment.scissor[1] >= fragment.scissor[3] || fragment.scissor[0] >= fragment.scissor[2] {
 		return
 	}
-	target.open(dsp, private, fragment.scissor[1], fragment.scissor[3])
-	if fragment.scissor[1] < target.row0 {
-		fragment.scissor[1] = target.row0
-	}
-	if fragment.scissor[3] > target.row1 {
-		fragment.scissor[3] = target.row1
-	}
-
 	shaded := make([]grpClipVertex, vertexCount)
 	for index := 0; index < vertexCount; index++ {
 		in := grpInputVertex{
@@ -790,6 +867,26 @@ func (s *qualcommGraphicsState) draw(
 		}
 		shaded = indexed
 	}
+	// Load only the rows the batch can reach.
+	if low, high, bounded := geometry.windowRows(shaded); bounded {
+		if low > fragment.scissor[1] {
+			fragment.scissor[1] = low
+		}
+		if high < fragment.scissor[3] {
+			fragment.scissor[3] = high
+		}
+	}
+	if fragment.scissor[1] >= fragment.scissor[3] {
+		return
+	}
+	target.open(dsp, s.scratch, private, fragment.scissor[1], fragment.scissor[3])
+	if fragment.scissor[1] < target.row0 {
+		fragment.scissor[1] = target.row0
+	}
+	if fragment.scissor[3] > target.row1 {
+		fragment.scissor[3] = target.row1
+	}
 	geometry.drawPrimitives(&target.surface, fragment, mode, shaded)
 	target.dirty = true
+	target.depthDirty = target.depthDirty || fragment.depthTest && fragment.depthWrite
 }
