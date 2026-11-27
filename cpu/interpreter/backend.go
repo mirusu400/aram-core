@@ -279,8 +279,12 @@ type Backend struct {
 	readScratch    [4]byte
 	writeScratch   [4]byte
 	executionTraps map[cpu.ExecutionTrap]struct{}
-	interruptLines uint32
-	closedState    atomic.Bool
+	// executionTrapFilter has one bit per halfword-aligned address modulo
+	// 128 KiB. A clear bit proves no trap is installed there, which keeps the
+	// struct-keyed map lookup off nearly every instruction boundary.
+	executionTrapFilter [executionTrapFilterWords]uint64
+	interruptLines      uint32
+	closedState         atomic.Bool
 	// instructionCacheTable is the functional ARM926 VIVT shadow, consulted
 	// only while CP15 enables it, which no application machine does. It is a
 	// pointer so an application backend carries eight bytes rather than the
@@ -621,8 +625,19 @@ func (b *Backend) SetExecutionTraps(traps []cpu.ExecutionTrap) error {
 		configured[trap] = struct{}{}
 	}
 	b.executionTraps = configured
+	b.executionTrapFilter = [executionTrapFilterWords]uint64{}
+	for trap := range configured {
+		bit := executionTrapFilterBit(trap.Address)
+		b.executionTrapFilter[bit>>6] |= 1 << (bit & 63)
+	}
 	b.invalidateTranslations()
 	return nil
+}
+
+const executionTrapFilterWords = 1024
+
+func executionTrapFilterBit(address uint32) uint32 {
+	return address >> 1 & (executionTrapFilterWords*64 - 1)
 }
 
 func (b *Backend) executionTrapAt(mode cpu.Mode, address uint32) bool {
@@ -630,6 +645,9 @@ func (b *Backend) executionTrapAt(mode cpu.Mode, address uint32) bool {
 	// with no host boundary installed is the common case. The length test is
 	// inlined; the map lookup it guards is a call.
 	if len(b.executionTraps) == 0 {
+		return false
+	}
+	if bit := executionTrapFilterBit(address); b.executionTrapFilter[bit>>6]&(1<<(bit&63)) == 0 {
 		return false
 	}
 	_, ok := b.executionTraps[cpu.ExecutionTrap{Address: address, Mode: mode}]

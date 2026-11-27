@@ -535,3 +535,41 @@ func (b *testSystemBus) readU32(address uint32) uint32 {
 	}
 	return binary.LittleEndian.Uint32(encoded[:])
 }
+
+// The trap filter folds addresses modulo 128 KiB and ignores the mode, so an
+// instruction that shares a filter bit with a trap must still be decided by
+// the exact table.
+func TestExecutionTrapFilterDoesNotTrapAliasedAddressesOrModes(t *testing.T) {
+	const aliasDistance = executionTrapFilterWords * 64 * 2
+	bus := &testSystemBus{memory: make(map[uint32]byte)}
+	for index, instruction := range []uint32{
+		0xe3a00001, // MOV r0, #1
+		0xe2800001, // ADD r0, r0, #1
+		0xe1200070, // BKPT
+	} {
+		var encoded [4]byte
+		binary.LittleEndian.PutUint32(encoded[:], instruction)
+		bus.writeRaw(0x1000+uint32(index*4), encoded[:])
+	}
+	backend := New()
+	check(t, backend.AttachSystemBus(bus))
+	check(t, backend.SetExecutionTraps([]cpu.ExecutionTrap{
+		{Address: 0x1004 + aliasDistance, Mode: cpu.ModeARM},
+		{Address: 0x1004, Mode: cpu.ModeThumb},
+	}))
+	if executionTrapFilterBit(0x1004) != executionTrapFilterBit(0x1004+aliasDistance) {
+		t.Fatal("test addresses do not share a filter bit")
+	}
+	if !backend.executionTrapAt(cpu.ModeARM, 0x1004+aliasDistance) || !backend.executionTrapAt(cpu.ModeThumb, 0x1004) {
+		t.Fatal("installed traps are not reported")
+	}
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeARM, 8)
+	if result.Err != nil || result.Reason != cpu.StopBreakpoint || result.Instructions != 3 {
+		t.Fatalf("run across an aliased address = %+v", result)
+	}
+	// Replacing the table drops the old filter bits.
+	check(t, backend.SetExecutionTraps([]cpu.ExecutionTrap{{Address: 0x2000, Mode: cpu.ModeARM}}))
+	if backend.executionTrapAt(cpu.ModeThumb, 0x1004) || !backend.executionTrapAt(cpu.ModeARM, 0x2000) {
+		t.Fatal("replaced trap table kept stale entries")
+	}
+}
