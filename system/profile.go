@@ -3658,6 +3658,7 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 		ChannelOffset: 0x00202400, ChannelStride: 0x4a, Channels: 4,
 		ServiceOffset: 0x00202528, EventOffset: 0x00007056, EventValue: 0x0311,
 		ControlFlagOffset: 0x00006ec8, ControlFlags: 5,
+		SynthCommandOffset:         0x00201ff4,
 		PrivateStateOffset:         0x07e00000,
 		InterruptGroupStatusOffset: 0x84, InterruptGroupMask: 0x01,
 		InstructionsPerSecond: 60_000_000,

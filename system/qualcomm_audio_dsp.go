@@ -41,6 +41,11 @@ type QualcommAudioDSPProfile struct {
 	ControlFlagOffset uint32
 	ControlFlags      uint8
 
+	// SynthCommandOffset is the command-count word of the MIDI synthesiser's
+	// queue. The synthesiser is not modelled; its queue is drained so the
+	// driver never finds it full.
+	SynthCommandOffset uint32
+
 	// PrivateStateOffset is DSP-internal memory holding each channel's
 	// format and play position, so a machine snapshot carries them.
 	PrivateStateOffset uint32
@@ -104,7 +109,7 @@ func (p QualcommAudioDSPProfile) validate(memory []MemoryRegionProfile) error {
 		p.ChannelStride < qualcommAudioChannelVolume+2 || p.ChannelStride%2 != 0 ||
 		!inside(p.CommandOffset, 2) || !inside(p.ArgumentOffset, 12) ||
 		!inside(p.ChannelOffset, uint32(p.Channels)*p.ChannelStride) ||
-		!inside(p.ServiceOffset, 2) || !inside(p.EventOffset, 2) ||
+		!inside(p.ServiceOffset, 2) || !inside(p.EventOffset, 2) || !inside(p.SynthCommandOffset, 2) ||
 		!inside(p.ControlFlagOffset, uint32(p.ControlFlags)*2) ||
 		!inside(p.PrivateStateOffset, qualcommAudioPrivateSize) ||
 		p.InterruptGroupMask == 0 || p.InstructionsPerSecond == 0 ||
@@ -319,8 +324,10 @@ func (d *QualcommAudioDSP) MemoryWritten(memory CoprocessorMemory, offset uint32
 	if width != Width16 || value == 0 {
 		return
 	}
-	if flags := d.profile.ControlFlagOffset; offset >= flags && offset < flags+uint32(d.profile.ControlFlags)*2 {
-		// Positional-audio controls are accepted and ignored.
+	if flags := d.profile.ControlFlagOffset; offset == d.profile.SynthCommandOffset ||
+		offset >= flags && offset < flags+uint32(d.profile.ControlFlags)*2 {
+		// Synthesiser commands and positional-audio controls are accepted
+		// and ignored.
 		qualcommGraphicsDSPMemory{memory: memory, base: d.base}.write16(offset, 0)
 		return
 	}

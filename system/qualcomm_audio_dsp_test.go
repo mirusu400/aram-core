@@ -14,6 +14,7 @@ func testAudioDSPProfile() QualcommAudioDSPProfile {
 		ChannelOffset: 0x0500, ChannelStride: 0x4a, Channels: 2,
 		ServiceOffset: 0x0600, EventOffset: 0x0602, EventValue: 0x0311,
 		ControlFlagOffset: 0x0610, ControlFlags: 2,
+		SynthCommandOffset:         0x0620,
 		PrivateStateOffset:         0x9000,
 		InterruptGroupStatusOffset: 0x84, InterruptGroupMask: 0x01,
 		// One output frame per instruction keeps the arithmetic visible.
@@ -129,8 +130,9 @@ func TestQualcommAudioDSPPlaysLentADPCMBuffers(t *testing.T) {
 
 	// A positional-audio control buffer is taken at once.
 	h.write16(0x70000612, 3)
-	if h.read16(0x70000612) != 0 {
-		t.Fatal("control flag was not cleared")
+	h.write16(0x70000620, 1)
+	if h.read16(0x70000612) != 0 || h.read16(0x70000620) != 0 {
+		t.Fatal("control flag or synthesiser queue was not cleared")
 	}
 
 	// Start channel 0: IMA ADPCM, 8000 Hz, mono, 65 samples per block.
