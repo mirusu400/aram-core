@@ -58,7 +58,26 @@ func (b *Backend) instructionCacheEntry(mvaLine uint32) *instructionCacheEntry {
 }
 
 func (b *Backend) instructionCacheEnabled() bool {
-	return b.cp15.control&(1<<12) != 0
+	return !b.instructionCacheCoherent && b.cp15.control&(1<<12) != 0
+}
+
+// SetInstructionCacheCoherent chooses whether an enabled ARM926 instruction
+// cache is treated as always coherent with memory. The default, false,
+// models stale lines: code overwritten without an invalidation keeps
+// executing its cached copy, which some firmware depends on. A machine whose
+// firmware invalidates correctly can opt out of that model and its cost.
+func (b *Backend) SetInstructionCacheCoherent(coherent bool) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return cpu.ErrClosed
+	}
+	if b.instructionCacheCoherent != coherent {
+		b.instructionCacheCoherent = coherent
+		b.instructionCacheTable = nil
+		b.invalidateInstructionCache()
+	}
+	return nil
 }
 
 func (b *Backend) modifiedVirtualAddress(address uint32) uint32 {

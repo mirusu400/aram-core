@@ -506,6 +506,15 @@ func (b *Backend) translateARMInstr(instruction, pc uint32) (jitExec, bool, bool
 		// Atomic bus semantics remain with the precise interpreter.
 		return nil, false, false
 
+	case isARMDSP(instruction): // ARMv5TE saturating arithmetic and 16-bit multiplies
+		if !armDSPOperandsValid(instruction) {
+			return nil, false, false
+		}
+		return body(func(b *Backend) (bool, *cpu.StopReason, error) {
+			b.executeARMDSP(instruction)
+			return false, nil, nil
+		}, false)
+
 	case instruction&0x0fc000f0 == 0x00000090: // MUL / MLA
 		accumulate := instruction&(1<<21) != 0
 		setFlags := instruction&(1<<20) != 0

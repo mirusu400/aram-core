@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/mirusu400/aram-core/cpu"
@@ -478,5 +479,62 @@ func TestBusReadMemoryKeepsHostInspectionOffDevicesAndObservers(t *testing.T) {
 	}
 	if device.reads != 0 {
 		t.Fatalf("host read reached the device %d times", device.reads)
+	}
+}
+
+type recordingCoprocessor struct {
+	writes  [][3]uint32
+	payload []byte
+	denied  bool
+}
+
+func (c *recordingCoprocessor) MemoryWritten(memory CoprocessorMemory, offset uint32, width Width, value uint32) {
+	c.writes = append(c.writes, [3]uint32{offset, uint32(width), value})
+	if offset != 0x100 {
+		return
+	}
+	// A bus master reads ordinary RAM the host named and answers into both
+	// that RAM and its own shared region; device and ROM regions decline.
+	c.payload = make([]byte, 4)
+	memory.ReadMemory(value, c.payload)
+	memory.WriteMemory(value+4, []byte{0xaa, 0xbb})
+	memory.WriteMemory(0x70000200, []byte{0x55})
+	c.denied = !memory.ReadMemory(0x90000000, make([]byte, 4)) &&
+		!memory.WriteMemory(0x20000000, []byte{1}) &&
+		!memory.ReadMemory(0x0000fffe, make([]byte, 4))
+}
+
+func TestBusMemoryCoprocessorObservesStoresAndMastersGuestMemory(t *testing.T) {
+	bus := NewBus()
+	check(t, bus.MapRAM("ram", 0x00000000, 0x10000))
+	check(t, bus.MapROM("rom", 0x20000000, []byte{1, 2, 3, 4}))
+	check(t, bus.MapSparseRAM("dsp", 0x70000000, 0x10000))
+	check(t, bus.MapMMIO("device", 0x90000000, 0x100, &registerDevice{}))
+	coprocessor := &recordingCoprocessor{}
+	check(t, bus.AttachMemoryCoprocessor("dsp", coprocessor))
+	for _, name := range []string{"dsp", "rom", "device", "missing"} {
+		if err := bus.AttachMemoryCoprocessor(name, coprocessor); !errors.Is(err, ErrInvalidRegion) {
+			t.Fatalf("second attachment to %q error = %v", name, err)
+		}
+	}
+	if _, direct := bus.DirectMemoryRegion(0x70000000, 4, cpu.PermissionRead); direct {
+		t.Fatal("coprocessor region was offered as direct memory")
+	}
+
+	check(t, bus.Write(0x00000040, []byte{1, 2, 3, 4}, cpu.PermissionWrite))
+	check(t, bus.Write(0x70000010, []byte{0x34, 0x12}, cpu.PermissionWrite))
+	check(t, bus.Write(0x70000100, []byte{0x40, 0, 0, 0}, cpu.PermissionWrite))
+	if want := [][3]uint32{{0x10, 2, 0x1234}, {0x100, 4, 0x40}}; !reflect.DeepEqual(coprocessor.writes, want) {
+		t.Fatalf("observed stores = %v, want %v", coprocessor.writes, want)
+	}
+	if !bytes.Equal(coprocessor.payload, []byte{1, 2, 3, 4}) || !coprocessor.denied {
+		t.Fatalf("bus-master read = %x, declined = %t", coprocessor.payload, coprocessor.denied)
+	}
+	answer := make([]byte, 2)
+	check(t, bus.Read(0x00000044, answer, cpu.PermissionRead))
+	shared := make([]byte, 1)
+	check(t, bus.Read(0x70000200, shared, cpu.PermissionRead))
+	if !bytes.Equal(answer, []byte{0xaa, 0xbb}) || shared[0] != 0x55 {
+		t.Fatalf("bus-master stores = %x / %x", answer, shared)
 	}
 }

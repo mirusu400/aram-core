@@ -43,6 +43,10 @@ type QualcommVectoredInterruptGroupConfig struct {
 	EnableOffset uint32
 	StatusOffset uint32
 	ValidMask    uint32
+	// LatchedMask marks children whose request is an edge the controller
+	// holds until the dispatcher writes the child bit back to EnableOffset,
+	// which on those children doubles as the clear register.
+	LatchedMask uint32
 }
 
 type QualcommVectoredInterruptConfig struct {
@@ -83,6 +87,7 @@ func (c QualcommVectoredInterruptConfig) validate() error {
 	for index := uint8(0); index < c.GroupCount; index++ {
 		group := c.Groups[index]
 		if group.Source >= c.SourceCount || group.ValidMask == 0 ||
+			group.LatchedMask&^group.ValidMask != 0 ||
 			group.EnableOffset%4 != 0 || group.StatusOffset%4 != 0 ||
 			group.EnableOffset >= QualcommVectoredInterruptControllerWindowSize ||
 			group.StatusOffset >= QualcommVectoredInterruptControllerWindowSize ||
@@ -241,6 +246,7 @@ func (d *QualcommVectoredInterruptController) Write(offset uint32, width Width, 
 		// replacing the word here would make a later child silently disable every
 		// one registered before it.
 		d.groupEnable[index] |= value & d.config.Groups[index].ValidMask
+		d.groupLevel[index] &^= value & d.config.Groups[index].LatchedMask
 		return d.refreshGroupSource(index)
 	}
 	switch offset {

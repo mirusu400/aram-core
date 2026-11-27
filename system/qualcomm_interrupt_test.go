@@ -286,3 +286,71 @@ func TestQualcommBootControlRoutesInterruptWindowToARMCore(t *testing.T) {
 		t.Fatalf("IRQ vector r0 = %d error %v", value, err)
 	}
 }
+
+func TestQualcommInterruptControllerDrivesProfiledGPIOInputLine(t *testing.T) {
+	config := QualcommInterruptControllerConfig{
+		GPIOInputs:     []QualcommGPIOInputRegister{{Offset: 0x3c, Value: 0x40000001}},
+		GPIOInputLines: []QualcommGPIOInputLine{{Offset: 0x3c, Bit: 30}},
+	}
+	device, err := NewQualcommInterruptControllerWithConfig(config, nil)
+	check(t, err)
+	read := func(device *QualcommInterruptController) uint32 {
+		t.Helper()
+		value, err := device.Read(0x3c, Width32)
+		check(t, err)
+		return value
+	}
+	if value := read(device); value != 0x40000001 {
+		t.Fatalf("idle GPIO input word = %#x", value)
+	}
+	check(t, device.SetGPIOInputLine(0x3c, 30, false))
+	if value := read(device); value != 0x00000001 {
+		t.Fatalf("driven-low GPIO input word = %#x", value)
+	}
+	// Only profiled lines are externally driven; neighbouring bits keep the
+	// board value.
+	for _, line := range []QualcommGPIOInputLine{{Offset: 0x3c, Bit: 0}, {Offset: 0x40, Bit: 30}, {Offset: 0x3c, Bit: 32}} {
+		if err := device.SetGPIOInputLine(line.Offset, line.Bit, true); !errors.Is(err, ErrQualcommInterruptControllerMMIO) {
+			t.Fatalf("unprofiled line %+v error = %v", line, err)
+		}
+	}
+
+	state, err := device.SaveState()
+	check(t, err)
+	restored, err := NewQualcommInterruptControllerWithConfig(config, nil)
+	check(t, err)
+	check(t, restored.LoadState(state))
+	if value := read(restored); value != 0x00000001 {
+		t.Fatalf("restored GPIO input word = %#x", value)
+	}
+	// A level outside the profiled line mask is not a state this board can save.
+	corrupt := append([]byte(nil), state...)
+	binary.LittleEndian.PutUint32(corrupt[len(corrupt)-4:], 1)
+	if err := restored.LoadState(corrupt); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("corrupt line level error = %v", err)
+	}
+	// The same board without the externally driven line keeps the older,
+	// shorter layout and must not accept this state.
+	withoutLine, err := NewQualcommInterruptControllerWithConfig(QualcommInterruptControllerConfig{
+		GPIOInputs: config.GPIOInputs,
+	}, nil)
+	check(t, err)
+	if err := withoutLine.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("line state accepted without a profiled line: %v", err)
+	}
+
+	check(t, restored.Reset())
+	if value := read(restored); value != 0x40000001 {
+		t.Fatalf("reset GPIO input word = %#x", value)
+	}
+
+	for _, invalid := range []QualcommInterruptControllerConfig{
+		{GPIOInputLines: []QualcommGPIOInputLine{{Offset: 0x3c, Bit: 30}}},
+		{GPIOInputs: config.GPIOInputs, GPIOInputLines: []QualcommGPIOInputLine{{Offset: 0x3c, Bit: 32}}},
+		{GPIOInputs: config.GPIOInputs, GPIOInputLines: []QualcommGPIOInputLine{{Offset: 0x3c, Bit: 30}, {Offset: 0x3c, Bit: 30}}},
+	} {
+		if _, err := NewQualcommInterruptControllerWithConfig(invalid, nil); !errors.Is(err, ErrInvalidRegion) {
+			t.Fatalf("invalid GPIO input line config %+v error = %v", invalid, err)
+		}
+	}
+}

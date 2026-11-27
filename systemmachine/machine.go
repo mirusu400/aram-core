@@ -402,7 +402,10 @@ type Machine struct {
 	vectoredIRQs   *system.QualcommVectoredInterruptController
 	primaryClock   *system.QualcommPrimaryClockControl
 	primaryKeys    map[string]system.QualcommPrimaryClockKeyProfile
+	gpioInputs     *system.QualcommInterruptController
+	gpioInputKeys  map[string]system.QualcommGPIOInputKeyProfile
 	audio          *schw830Audio
+	dspAudio       *system.QualcommAudioDSP
 	controls       []string
 
 	resetCPUState            []byte
@@ -721,9 +724,15 @@ func newSamsungQualcommMachine(
 	if !ok {
 		return fail(fmt.Errorf("%w: %s has no interrupt-line sink", ErrUnsupportedBackend, backend.Identity().Name))
 	}
+	var cpuHalt *system.CPUHaltLine
+	var vectoredSink system.InterruptLineSink = interruptSink
+	if board.BootControlCPUHaltOffset != 0 {
+		cpuHalt = system.NewCPUHaltLine(interruptSink, backend.Stop)
+		vectoredSink = cpuHalt
+	}
 	vectoredInterrupts, err := system.NewQualcommVectoredInterruptController(
 		*board.VectoredInterrupt,
-		interruptSink,
+		vectoredSink,
 	)
 	if err != nil {
 		return fail(fmt.Errorf("create %s vectored interrupt controller: %w", firmwareProfile.Model, err))
@@ -739,8 +748,9 @@ func newSamsungQualcommMachine(
 	}
 	legacyInterrupts, err := system.NewQualcommInterruptControllerWithConfig(
 		system.QualcommInterruptControllerConfig{
-			GPIOInputs:    board.BootControlGPIOInputs,
-			StatusAliases: board.BootControlInterruptStatusAliases,
+			GPIOInputs:     board.BootControlGPIOInputs,
+			GPIOInputLines: board.BootControlGPIOInputLines(),
+			StatusAliases:  board.BootControlInterruptStatusAliases,
 		},
 		legacyInterruptSink,
 	)
@@ -858,6 +868,8 @@ func newSamsungQualcommMachine(
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
 		EBIMemoryConfiguration: 0x5880, ClockModeStatus: board.BootClockModeStatus,
 		WritableOffsets:                board.BootControlWritableOffsets,
+		CPUHalt:                        cpuHalt,
+		CPUHaltOffset:                  board.BootControlCPUHaltOffset,
 		InterruptWindowWritableOffsets: board.BootControlInterruptWindowWritableOffsets,
 		HalfwordOffsets:                board.BootControlHalfwordOffsets,
 		MixedWidthOffsets:              board.BootControlMixedWidthOffsets,
@@ -1162,6 +1174,13 @@ func newSamsungQualcommMachine(
 	); err != nil {
 		return fail(err)
 	}
+	var dspAudio *system.QualcommAudioDSP
+	if board.GraphicsDSP != nil || board.AudioDSP != nil {
+		dspAudio, err = board.AttachDSPModules(bus, vectoredInterrupts)
+		if err != nil {
+			return fail(err)
+		}
+	}
 	var panelProbe *system.LCDTransferProbe
 	if options.ProbePanelProtocol {
 		panelProbe = system.NewLCDTransferProbe()
@@ -1175,6 +1194,15 @@ func newSamsungQualcommMachine(
 	if err := handoff.Apply(bus, backend); err != nil {
 		return fail(fmt.Errorf("apply %s PBL handoff: %w", firmwareProfile.Model, err))
 	}
+	if board.CoherentInstructionCache {
+		if coherent, ok := backend.(interface {
+			SetInstructionCacheCoherent(bool) error
+		}); ok {
+			if err := coherent.SetInstructionCacheCoherent(true); err != nil {
+				return fail(fmt.Errorf("configure %s instruction cache: %w", firmwareProfile.Model, err))
+			}
+		}
+	}
 	resetCPUState, err := backend.SaveContext()
 	if err != nil {
 		return fail(fmt.Errorf("capture %s reset CPU state: %w", firmwareProfile.Model, err))
@@ -1183,6 +1211,10 @@ func newSamsungQualcommMachine(
 	clockedDevices := bus.ClockedDevices()
 	if audio != nil {
 		clockedDevices = append(clockedDevices, audio)
+	}
+	if dspAudio != nil {
+		dspAudio.SetOutputChannels(options.OutputChannels)
+		clockedDevices = append(clockedDevices, dspAudio)
 	}
 	var executionRunner system.ExecutionRunner = backend
 	if len(board.HLECalls) != 0 {
@@ -1213,6 +1245,9 @@ func newSamsungQualcommMachine(
 	if err != nil {
 		return fail(err)
 	}
+	if cpuHalt != nil {
+		runner.SetCPUHalt(cpuHalt)
+	}
 	machine := &Machine{
 		identity: Identity{
 			Manufacturer:    firmwareProfile.Manufacturer,
@@ -1228,7 +1263,8 @@ func newSamsungQualcommMachine(
 		oneNANDSpare: oneNANDSpare,
 		panel:        dcsPanelController, mdp: mdp, panelProbe: panelProbe, keypad: keypad, touchscreen: touchscreen,
 		vectoredIRQs: vectoredInterrupts,
-		primaryClock: primaryClock, primaryKeys: boardPrimaryClockKeys(board), audio: audio,
+		primaryClock: primaryClock, primaryKeys: boardPrimaryClockKeys(board), audio: audio, dspAudio: dspAudio,
+		gpioInputs: legacyInterrupts, gpioInputKeys: boardGPIOInputKeys(board),
 		controls:                 boardControls(board),
 		resetCPUState:            append([]byte(nil), resetCPUState...),
 		factoryNANDState:         append([]byte(nil), factoryNANDState...),
@@ -4282,7 +4318,21 @@ func boardControls(board system.BoardProfile) []string {
 	for _, key := range board.PrimaryClockKeys {
 		controls = append(controls, key.ID)
 	}
+	for _, key := range board.BootControlGPIOInputKeys {
+		controls = append(controls, key.ID)
+	}
 	return controls
+}
+
+func boardGPIOInputKeys(board system.BoardProfile) map[string]system.QualcommGPIOInputKeyProfile {
+	if len(board.BootControlGPIOInputKeys) == 0 {
+		return nil
+	}
+	keys := make(map[string]system.QualcommGPIOInputKeyProfile, len(board.BootControlGPIOInputKeys))
+	for _, key := range board.BootControlGPIOInputKeys {
+		keys[key.ID] = key
+	}
+	return keys
 }
 
 func boardPrimaryClockKeys(board system.BoardProfile) map[string]system.QualcommPrimaryClockKeyProfile {
@@ -4414,6 +4464,12 @@ func (m *Machine) SetKey(id string, pressed bool) error {
 		}
 		return m.primaryClock.SetInputLine(key.InputLine, high)
 	}
+	if key, ok := m.gpioInputKeys[id]; ok {
+		if m.gpioInputs == nil {
+			return ErrUnsupportedControl
+		}
+		return m.gpioInputs.SetGPIOInputLine(key.Offset, key.Bit, pressed != key.ActiveLow)
+	}
 	if m.keypad == nil {
 		return ErrUnsupportedControl
 	}
@@ -4507,6 +4563,10 @@ func (m *Machine) powerCycleLocked() error {
 			return err
 		}
 	}
+	if m.dspAudio != nil {
+		m.dspAudio.Restart(0)
+	}
+	m.runner.RestartCPUClock()
 	if err := m.backend.RestoreContext(m.resetCPUState); err != nil {
 		return fmt.Errorf("restore reset CPU state: %w", err)
 	}
@@ -4808,6 +4868,10 @@ func (m *Machine) LoadSnapshot(snapshot Snapshot) error {
 			return err
 		}
 	}
+	if m.dspAudio != nil {
+		m.dspAudio.Restart(snapshot.Instructions)
+	}
+	m.runner.RestartCPUClock()
 	m.bootBoundaryLeft = 0
 	if snapshot.Instructions < m.bootBoundary.instructions {
 		m.bootBoundaryLeft = m.bootBoundary.instructions - snapshot.Instructions

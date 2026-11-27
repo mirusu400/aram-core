@@ -47,3 +47,34 @@ func TestMachineSetKeyDrivesActiveLowPrimaryClockInput(t *testing.T) {
 		t.Fatalf("unknown primary-clock control error = %v", err)
 	}
 }
+
+func TestMachineSetKeyDrivesActiveLowGPIOInputKey(t *testing.T) {
+	board := system.SPHW4200DC17BoardProfile()
+	controls := boardControls(board)
+	if len(controls) != 1 || controls[0] != "hold" {
+		t.Fatalf("SPH-W4200 controls = %v", controls)
+	}
+	inputs, err := system.NewQualcommInterruptControllerWithConfig(system.QualcommInterruptControllerConfig{
+		GPIOInputs:     board.BootControlGPIOInputs,
+		GPIOInputLines: board.BootControlGPIOInputLines(),
+	}, nil)
+	check(t, err)
+	machine := &Machine{gpioInputs: inputs, gpioInputKeys: boardGPIOInputKeys(board)}
+	read := func() uint32 {
+		t.Helper()
+		value, err := inputs.Read(0x3c, system.Width32)
+		check(t, err)
+		return value
+	}
+	if value := read(); value&(1<<30) == 0 {
+		t.Fatalf("idle HOLD input word = %#x", value)
+	}
+	check(t, machine.SetKey("hold", true))
+	if value := read(); value&(1<<30) != 0 {
+		t.Fatalf("pressed HOLD input word = %#x", value)
+	}
+	check(t, machine.SetKey("hold", false))
+	if value := read(); value&(1<<30) == 0 {
+		t.Fatalf("released HOLD input word = %#x", value)
+	}
+}

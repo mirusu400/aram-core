@@ -235,6 +235,8 @@ func (b *Backend) translateOneNativeARM(
 		return translateTerminator, term
 	case instruction&0x0fff0ff0 == 0x016f0f10: // CLZ (not a register shift)
 		return translateBail, terminator{}
+	case isARMDSP(instruction): // ARMv5TE DSP forms are not compares; leave them to the interpreter
+		return translateBail, terminator{}
 	case instruction&0x0fc000f0 == 0x00000090: // MUL / MLA
 		op := nativeARMMultiply{
 			accumulate: instruction&(1<<21) != 0,

@@ -950,10 +950,20 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 	}
 	if want := []QualcommSBIReadResponse{
 		{Controller: 0x5100, Address: 0x4f, Value: 0xc1},
-		{Controller: 0x5100, Address: 0x53, Value: 0xff},
+		{Controller: 0x5100, Address: 0x53, Value: 0xc4},
 		{Controller: 0x5100, Address: 0x54, Value: 0x01},
 	}; !reflect.DeepEqual(profile.BootControlSBIReadResponses, want) {
 		t.Fatalf("SPH-W4200 PMIC ADC responses = %+v", profile.BootControlSBIReadResponses)
+	}
+	// The HOLD key idles released on bit 30 of GPIO input word +0x093c.
+	foundHoldInput := false
+	for _, input := range profile.BootControlGPIOInputs {
+		foundHoldInput = foundHoldInput || input == (QualcommGPIOInputRegister{Offset: 0x3c, Value: 0x40000000})
+	}
+	if want := []QualcommGPIOInputKeyProfile{
+		{ID: "hold", Offset: 0x3c, Bit: 30, ActiveLow: true},
+	}; !foundHoldInput || !reflect.DeepEqual(profile.BootControlGPIOInputKeys, want) {
+		t.Fatalf("SPH-W4200 HOLD input = %t keys %+v", foundHoldInput, profile.BootControlGPIOInputKeys)
 	}
 	if !slices.Contains(profile.LegacyTopWritableOffsets, uint32(0x03a8)) {
 		t.Fatalf("SPH-W4200 PBL top-page scratch = %#v", profile.LegacyTopWritableOffsets)
@@ -1019,15 +1029,23 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 	foundExternalBytePorts := [2]bool{}
 	foundExternalGPIO := [8]bool{}
 	foundAMSSInterruptRegisters := [5]bool{}
+	// Each of the two extra EBI chip-selects is 64 MiB of ordinary RAM
+	// followed by a page-backed, unpopulated upper half.
+	banks := 0
 	for _, memory := range profile.Memory {
-		foundSecondRAM = foundSecondRAM || memory == (MemoryRegionProfile{
-			ID: "w4200-ebi-ram-bank-1", Kind: MemorySparseRAM,
-			Address: 0x08000000, Size: 0x08000000,
-		})
-		foundSharedConfig = foundSharedConfig || memory == (MemoryRegionProfile{
-			ID: "w4200-shared-config-segment", Kind: MemorySparseRAM,
-			Address: 0x18000000, Size: 0x02600000,
-		})
+		switch memory {
+		case MemoryRegionProfile{ID: "w4200-ebi-ram-bank-1", Kind: MemoryRAM, Address: 0x08000000, Size: 0x04000000},
+			MemoryRegionProfile{ID: "w4200-ebi-ram-bank-1-aperture", Kind: MemorySparseRAM, Address: 0x0c000000, Size: 0x04000000}:
+			banks++
+			foundSecondRAM = banks&3 != 0
+		case MemoryRegionProfile{ID: "w4200-shared-config-segment", Kind: MemoryRAM, Address: 0x18000000, Size: 0x04000000},
+			MemoryRegionProfile{ID: "w4200-shared-config-aperture", Kind: MemorySparseRAM, Address: 0x1c000000, Size: 0x04000000}:
+			banks += 4
+			foundSharedConfig = true
+		}
+	}
+	if banks != 10 {
+		t.Fatalf("SPH-W4200 RAM bank halves matched = %d, want both halves of both banks", banks)
 	}
 	for _, response := range profile.MemoryWriteResponses {
 		foundADSPDownloadResponse = foundADSPDownloadResponse || reflect.DeepEqual(response, MemoryWriteResponseProfile{
@@ -1046,6 +1064,69 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 			},
 		})
 	}
+	// The audio image's boot, command-consumption, and codec-configuration
+	// handshakes let voc_state leave its retry loop and reach IDLE.
+	for _, want := range []MemoryWriteResponseProfile{
+		{
+			MemoryID: "adsp-address-space", Offset: 0x000070ba,
+			Width: Width16, Request: 0xfffe,
+			Writes: []MemoryResponseWriteProfile{{Offset: 0x000070ba, Width: Width16, Value: 0xffff}},
+		},
+		{
+			MemoryID: "adsp-address-space", Offset: 0x00c00004,
+			Width: Width32, Request: 1,
+			Writes: []MemoryResponseWriteProfile{{Offset: 0x00201f92, Width: Width16, Value: 0}},
+		},
+		{
+			MemoryID: "adsp-address-space", Offset: 0x00201f92,
+			Width: Width16, Request: 0x0301,
+			Writes: []MemoryResponseWriteProfile{
+				{Offset: 0x00201f92, Width: Width16, Value: 0},
+				{Offset: 0x000070ba, Width: Width16, Value: 0},
+			},
+		},
+		{
+			MemoryID: "adsp-address-space", Offset: 0x00201f92,
+			Width: Width16, Request: 0x0002,
+			Writes: []MemoryResponseWriteProfile{
+				{Offset: 0x00201f92, Width: Width16, Value: 0},
+				{Offset: 0x000070ba, Width: Width16, Value: 0xffff},
+			},
+		},
+	} {
+		found := false
+		for _, response := range profile.MemoryWriteResponses {
+			found = found || reflect.DeepEqual(response, want)
+		}
+		if !found {
+			t.Fatalf("SPH-W4200 audio DSP response %+v is not profiled", want)
+		}
+	}
+	// The Q3Dimension graphics module of DSP image 0x0b, and the latched
+	// application-DSP interrupt child it reports through.
+	if want := (&QualcommGraphicsDSPProfile{
+		MemoryID:      "adsp-address-space",
+		ResetOffset:   0x00c00000,
+		TriggerOffset: 0x00c00008, TriggerValue: 0x88000000,
+		CommandOffset:       0x000071f8,
+		ModuleVersionOffset: 0x000070f4, ModuleVersion: 0x12000315,
+		StateOffset:        0x00206f5c,
+		ReadyOffset:        0x00206f5a,
+		ArrayAddressOffset: 0x00407670,
+		ArraySizeOffset:    0x00206f58,
+		StampOffset:        0x00407698,
+		EventRingOffset:    0x000071d8, EventRingLengthOffset: 0x00007214,
+		EventRingLength:            16,
+		PrivateStateOffset:         0x07f00000,
+		InterruptGroupStatusOffset: 0x84, InterruptGroupMask: 0x01,
+	}); !reflect.DeepEqual(profile.GraphicsDSP, want) {
+		t.Fatalf("SPH-W4200 graphics DSP = %+v", profile.GraphicsDSP)
+	}
+	if group := profile.VectoredInterrupt.Groups[0]; group != (QualcommVectoredInterruptGroupConfig{
+		Source: 11, EnableOffset: 0x10, StatusOffset: 0x84, ValidMask: 0x07, LatchedMask: 0x07,
+	}) {
+		t.Fatalf("SPH-W4200 application-DSP interrupt group = %+v", group)
+	}
 	for _, rule := range profile.ADSPMailbox.ControlRules {
 		foundADSPCommandResponse = foundADSPCommandResponse || reflect.DeepEqual(rule, QualcommADSPControlRuleProfile{
 			Offset: 0x08, Value: 0x00020000, ResponseDelayInstructions: 1,
@@ -1063,6 +1144,11 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 				},
 				{
 					WindowID: "external-16bit-bank-1", Offset: 0x00003e4a,
+					Width: Width16, Value: 1,
+				},
+				{
+					// wl1m's WCDMA ReadyForCmds poll reads bank 0 +0x2c4a.
+					WindowID: "external-16bit-bank-0", Offset: 0x00002c4a,
 					Width: Width16, Value: 1,
 				},
 			},
@@ -2527,5 +2613,26 @@ func TestBoardProfileRejectsOverlappingMemory(t *testing.T) {
 	}
 	if err := profile.Validate(); err == nil {
 		t.Fatal("BoardProfile accepted overlapping memory")
+	}
+}
+
+func TestBoardProfileRejectsGPIOInputKeyThatIdlesPressed(t *testing.T) {
+	profile := SPHW4200DC17BoardProfile()
+	check(t, profile.Validate())
+	for index, input := range profile.BootControlGPIOInputs {
+		if input.Offset == 0x3c {
+			profile.BootControlGPIOInputs[index].Value = 0
+		}
+	}
+	if err := profile.Validate(); err == nil {
+		t.Fatal("active-low GPIO input key with a clear idle bit was accepted")
+	}
+	profile = SPHW4200DC17BoardProfile()
+	profile.BootControlGPIOInputKeys = append(
+		profile.BootControlGPIOInputKeys,
+		QualcommGPIOInputKeyProfile{ID: "unprofiled", Offset: 0x44, Bit: 0},
+	)
+	if err := profile.Validate(); err == nil {
+		t.Fatal("GPIO input key on an unprofiled input word was accepted")
 	}
 }

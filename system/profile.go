@@ -468,6 +468,29 @@ type QualcommPrimaryClockKeyProfile struct {
 	ActiveLow bool
 }
 
+// QualcommGPIOInputKeyProfile names a handset key wired straight to one bit
+// of a profiled boot-control GPIO input word, outside any scanned matrix.
+// Firmware samples the word itself, so no interrupt routing is implied.
+type QualcommGPIOInputKeyProfile struct {
+	ID        string
+	Offset    uint32
+	Bit       uint8
+	ActiveLow bool
+}
+
+// BootControlGPIOInputLines lists the input bits which the profiled GPIO input
+// keys drive, in the form the interrupt/GPIO aperture is constructed with.
+func (p BoardProfile) BootControlGPIOInputLines() []QualcommGPIOInputLine {
+	if len(p.BootControlGPIOInputKeys) == 0 {
+		return nil
+	}
+	lines := make([]QualcommGPIOInputLine, 0, len(p.BootControlGPIOInputKeys))
+	for _, key := range p.BootControlGPIOInputKeys {
+		lines = append(lines, QualcommGPIOInputLine{Offset: key.Offset, Bit: key.Bit})
+	}
+	return lines
+}
+
 func (p HLECallProfile) validate() error {
 	trap := cpu.ExecutionTrap{Address: p.Address, Mode: p.Mode}
 	if !validProfileID(p.ID) || !validProfileID(p.Contract) || !trap.Valid() ||
@@ -539,6 +562,7 @@ type BoardProfile struct {
 	BootControlGroupedStatusResponses         []QualcommBootGroupedStatusResponse
 	BootControlWatchdogReadable               bool
 	BootControlGPIOInputs                     []QualcommGPIOInputRegister
+	BootControlGPIOInputKeys                  []QualcommGPIOInputKeyProfile
 	BootControlInterruptStatusAliases         []QualcommInterruptStatusAlias
 	PrimaryClockWritableOffsets               []uint32
 	PrimaryClockReadOnlyRegisters             []QualcommPrimaryClockReadOnlyRegister
@@ -567,13 +591,22 @@ type BoardProfile struct {
 	LegacyTopVectoredInterruptOffset          uint32
 	Memory                                    []MemoryRegionProfile
 	MemoryWriteResponses                      []MemoryWriteResponseProfile
+	GraphicsDSP                               *QualcommGraphicsDSPProfile
+	AudioDSP                                  *QualcommAudioDSPProfile
 	ReadOnlyRegisters                         []ReadOnlyRegisterProfile
 	LatchedRegisters                          []LatchedRegisterProfile
 	LatchedRegisterWindows                    []LatchedRegisterWindowProfile
 	AddressedStorageWindows                   []AddressedStorageWindowProfile
 	SamsungMGP                                *SamsungMGPProfile
 	ADSPMailbox                               *QualcommADSPMailboxProfile
-	HLECalls                                  []HLECallProfile
+	// BootControlCPUHaltOffset is the boot-control register through which
+	// firmware stops the processor clock until the next interrupt. Zero means
+	// the board does not model the gate and the write is an ordinary latch.
+	BootControlCPUHaltOffset uint32
+	// CoherentInstructionCache marks firmware that never depends on stale
+	// instruction-cache lines, so the CPU need not model them.
+	CoherentInstructionCache bool
+	HLECalls                 []HLECallProfile
 }
 
 // QualcommInterruptCascadeProfile routes the enabled output of the legacy QIC
@@ -753,10 +786,31 @@ func (p BoardProfile) Validate() error {
 		return fmt.Errorf("board profile %q boot-control register profile: %w", p.ID, err)
 	}
 	if err := validateQualcommInterruptControllerConfig(QualcommInterruptControllerConfig{
-		GPIOInputs:    p.BootControlGPIOInputs,
-		StatusAliases: p.BootControlInterruptStatusAliases,
+		GPIOInputs:     p.BootControlGPIOInputs,
+		GPIOInputLines: p.BootControlGPIOInputLines(),
+		StatusAliases:  p.BootControlInterruptStatusAliases,
 	}); err != nil {
 		return fmt.Errorf("board profile %q boot-control interrupt inputs: %w", p.ID, err)
+	}
+	gpioInputKeyIDs := make(map[string]struct{}, len(p.BootControlGPIOInputKeys))
+	for _, key := range p.BootControlGPIOInputKeys {
+		if !validProfileID(key.ID) || key.Bit >= 32 {
+			return fmt.Errorf("board profile %q has invalid GPIO input key %q", p.ID, key.ID)
+		}
+		if _, duplicate := gpioInputKeyIDs[key.ID]; duplicate {
+			return fmt.Errorf("board profile %q repeats GPIO input key ID %q", p.ID, key.ID)
+		}
+		if _, duplicate := primaryClockKeyIDs[key.ID]; duplicate {
+			return fmt.Errorf("board profile %q repeats key ID %q", p.ID, key.ID)
+		}
+		gpioInputKeyIDs[key.ID] = struct{}{}
+		// A key must idle released: an active-low line whose profiled word
+		// leaves the bit clear would read as permanently held.
+		for _, input := range p.BootControlGPIOInputs {
+			if input.Offset == key.Offset && (input.Value>>key.Bit&1 != 0) != key.ActiveLow {
+				return fmt.Errorf("board profile %q GPIO input key %q does not idle released", p.ID, key.ID)
+			}
+		}
 	}
 	if err := validateQualcommPrimaryClockWritableOffsets(p.PrimaryClockWritableOffsets); err != nil {
 		return fmt.Errorf("board profile %q primary-clock writable offsets: %w", p.ID, err)
@@ -1151,6 +1205,22 @@ func (p BoardProfile) Validate() error {
 		offset   uint32
 		width    Width
 		request  uint32
+	}
+	if p.GraphicsDSP != nil {
+		if err := p.GraphicsDSP.validate(p.Memory); err != nil {
+			return err
+		}
+		if p.VectoredInterrupt == nil {
+			return fmt.Errorf("Qualcomm graphics DSP needs a vectored interrupt controller")
+		}
+	}
+	if p.AudioDSP != nil {
+		if err := p.AudioDSP.validate(p.Memory); err != nil {
+			return err
+		}
+		if p.VectoredInterrupt == nil {
+			return fmt.Errorf("Qualcomm audio DSP needs a vectored interrupt controller")
+		}
 	}
 	responses := make(map[memoryResponseKey]struct{}, len(p.MemoryWriteResponses))
 	for _, response := range p.MemoryWriteResponses {
@@ -3471,11 +3541,53 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 	// DC17 uses the same PMIC ADC contract as the related MSM6280 handset:
 	// register 0x54 publishes conversion complete, 0x4f retains the selected
 	// 8-bit mode, and 0x53 supplies the completed battery sample.
+	//
+	// DC17 scales the sample before averaging ten of them into an 8-bit
+	// battery voltage: the related handset's 0xff sample averages to about
+	// 0x104, whose low byte reads as a missing battery and puts the handset
+	// in its test-jig idle state with battery level 0. 0xc4 averages to
+	// about 0xc7, above the firmware's 0xb9 full-level threshold.
 	profile.BootControlSBIReadResponses = []QualcommSBIReadResponse{
 		{Controller: 0x5100, Address: 0x4f, Value: 0xc1},
-		{Controller: 0x5100, Address: 0x53, Value: 0xff},
+		{Controller: 0x5100, Address: 0x53, Value: 0xc4},
 		{Controller: 0x5100, Address: 0x54, Value: 0x01},
 	}
+	// DC17's handset task polls GPIO input word CHIP_BASE+0x093c and treats
+	// a clear bit 30 as the side HOLD key: a press emits its key code and 20
+	// consecutive samples a long press. The word otherwise read back as zero,
+	// which held the key down permanently. HOLD is also the only way to wake
+	// the panel after the firmware's idle timeout disables the pen interrupt.
+	profile.BootControlGPIOInputs = append(
+		profile.BootControlGPIOInputs,
+		QualcommGPIOInputRegister{Offset: 0x3c, Value: 0x40000000},
+	)
+	profile.BootControlGPIOInputKeys = []QualcommGPIOInputKeyProfile{
+		{ID: "hold", Offset: 0x3c, Bit: 30, ActiveLow: true},
+	}
+	// The same task reads bit 10 of the GPIO input word at +0x0444 of the
+	// secondary clock aperture as "no earjack". The inherited zero made it
+	// see a headset whose remote key (word CHIP_BASE+0x0934, bit 28, active
+	// low) was held down: it rescanned every few milliseconds and never cast
+	// its sleep vote, so the idle task spun instead of halting. A handset
+	// with nothing plugged in reads the bit set.
+	for index := range profile.SecondaryClockReadOnlyRegisters {
+		if profile.SecondaryClockReadOnlyRegisters[index].Offset == 0x0444 {
+			profile.SecondaryClockReadOnlyRegisters[index].Value = 0x00000400
+		}
+	}
+	// With no headset the task goes on to scan the side-key matrix: five
+	// sense lines in the primary clock aperture's input word and a sixth on
+	// bit 5 of GPIO input word CHIP_BASE+0x0940. They are active low, so an
+	// untouched matrix reads the bit set.
+	profile.BootControlGPIOInputs = append(
+		profile.BootControlGPIOInputs,
+		QualcommGPIOInputRegister{Offset: 0x40, Value: 0x00000020},
+	)
+	// Once every task has cast its sleep vote, DC17's sleep task stops the
+	// ARM clock by storing 1 to CHIP_BASE+0x0204 and expects to continue only
+	// after an interrupt. Without the gate that store returned at once and
+	// the idle handset burned its whole time budget re-entering the routine.
+	profile.BootControlCPUHaltOffset = 0x0204
 	// AMSS samples the PBL-retained word at 0xfffff3a8 during its reset-vector
 	// hardware pass. A cold handset starts with no retained request asserted;
 	// keep the word writable because the same top-page slot is boot scratch RAM.
@@ -3502,7 +3614,92 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 				{Offset: 0x00202f3a, Width: Width16, Value: 1},
 			},
 		},
+		// The audio images carry their DSP state halfword initialised to -2.
+		// voc_state polls it 101 times after each download and reloads the
+		// image until the started DSP publishes -1.
+		MemoryWriteResponseProfile{
+			MemoryID: "adsp-address-space", Offset: 0x000070ba,
+			Width: Width16, Request: 0xfffe,
+			Writes: []MemoryResponseWriteProfile{{
+				Offset: 0x000070ba, Width: Width16, Value: 0xffff,
+			}},
+		},
+		// qdsp_cmd publishes a command word at +0x201f92, its arguments from
+		// +0x201f94, and then writes 1 to the DSP interrupt word at +0xc00004.
+		// It refuses the next command while the command word is still set; the
+		// running DSP clears it when it consumes the command.
+		MemoryWriteResponseProfile{
+			MemoryID: "adsp-address-space", Offset: 0x00c00004,
+			Width: Width32, Request: 1,
+			Writes: []MemoryResponseWriteProfile{{
+				Offset: 0x00201f92, Width: Width16, Value: 0,
+			}},
+		},
+		// Command 0x301 configures the codec. voc_state then polls the DSP
+		// state halfword until the image reports IDLE (0).
+		MemoryWriteResponseProfile{
+			MemoryID: "adsp-address-space", Offset: 0x00201f92,
+			Width: Width16, Request: 0x0301,
+			Writes: []MemoryResponseWriteProfile{
+				{Offset: 0x00201f92, Width: Width16, Value: 0},
+				{Offset: 0x000070ba, Width: Width16, Value: 0},
+			},
+		},
+		// Command 2 returns the image to its just-started state. voc_state
+		// issues it when another client changes the loaded modules without a
+		// fresh download, then waits for -1 exactly as it does after one.
+		MemoryWriteResponseProfile{
+			MemoryID: "adsp-address-space", Offset: 0x00201f92,
+			Width: Width16, Request: 0x0002,
+			Writes: []MemoryResponseWriteProfile{
+				{Offset: 0x00201f92, Width: Width16, Value: 0},
+				{Offset: 0x000070ba, Width: Width16, Value: 0xffff},
+			},
+		},
 	)
+	// The graphics-capable DSP image (0x0b) publishes the Q3Dimension module's
+	// ARM interface at these addresses; they are entries 0x694-0x6c0 and 0x830
+	// of that image's variable table. qglDSPSrvInit waits for the initialised
+	// marker, then submits command arrays through qgldsp_command.
+	// DC17 invalidates the instruction cache whenever it loads or patches
+	// code, so nothing it runs depends on a stale line. Its 3D titles spend
+	// most of their time in ARM-mode library code far larger than the
+	// cache, where modelling every eviction roughly halves emulation speed.
+	profile.CoherentInstructionCache = true
+	profile.GraphicsDSP = &QualcommGraphicsDSPProfile{
+		MemoryID:      "adsp-address-space",
+		ResetOffset:   0x00c00000,
+		TriggerOffset: 0x00c00008, TriggerValue: 0x88000000,
+		CommandOffset: 0x000071f8,
+		// The image stores the module version 0x0315.0x1200 at +0x70f4.
+		ModuleVersionOffset: 0x000070f4, ModuleVersion: 0x12000315,
+		StateOffset:        0x00206f5c,
+		ReadyOffset:        0x00206f5a,
+		ArrayAddressOffset: 0x00407670,
+		ArraySizeOffset:    0x00206f58,
+		StampOffset:        0x00407698,
+		EventRingOffset:    0x000071d8, EventRingLengthOffset: 0x00007214,
+		EventRingLength:    16,
+		PrivateStateOffset: 0x07f00000,
+		// Application-DSP interrupt 0 is child bit 0 of compact-VIC group 11.
+		InterruptGroupStatusOffset: 0x84, InterruptGroupMask: 0x01,
+	}
+	// The same image plays wave data: qdsp_cmd opens one of four channels
+	// with command 0x320 and lends each encoded buffer through the channel
+	// blocks at +0x202400. Its service routine accepts a data request when
+	// +0x202528 is set and the reason word +0x7056 reads 0x311.
+	profile.AudioDSP = &QualcommAudioDSPProfile{
+		MemoryID:      "adsp-address-space",
+		CommandOffset: 0x00201f92, ArgumentOffset: 0x00201f94,
+		ChannelOffset: 0x00202400, ChannelStride: 0x4a, Channels: 4,
+		ServiceOffset: 0x00202528, EventOffset: 0x00007056, EventValue: 0x0311,
+		ControlFlagOffset: 0x00006ec8, ControlFlags: 5,
+		SynthCommandOffset:         0x00201ff4,
+		PrivateStateOffset:         0x07e00000,
+		InterruptGroupStatusOffset: 0x84, InterruptGroupMask: 0x01,
+		InstructionsPerSecond: 60_000_000,
+		OutputSampleRate:      32000,
+	}
 	// DC17's QDSP command queue submits its shared-buffer address through the
 	// mailbox write-control word itself. The mailbox clears the hardware mutex
 	// bit before matching control rules, so 0x80020000 is observed here as
@@ -3528,6 +3725,14 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 				},
 				{
 					WindowID: "external-16bit-bank-1", Offset: 0x00003e4a,
+					Width: Width16, Value: 1,
+				},
+				{
+					// The WCDMA image publishes its own ReadyForCmds byte in
+					// bank 0. wl1m polls it 1000 times after the module loader
+					// reports the download and raises ERR_FATAL if it stays
+					// clear; the downloaded image initialises it to zero.
+					WindowID: "external-16bit-bank-0", Offset: 0x00002c4a,
 					Width: Width16, Value: 1,
 				},
 			},
@@ -3587,18 +3792,28 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 		Address: 0x01078ccc, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
 	})
 	// DC17 clears its second static-data segment at 0x08000000 before the
-	// AMSS handoff. Expose the MSM6280's adjacent EBI chip-select aperture as
-	// page-backed RAM so the complete address window is available without a
-	// second eager 128 MiB host allocation.
+	// AMSS handoff, and its final two progressive-ELF records form the
+	// Qualcomm shared configuration segment at 0x18000000..0x1a5e9900, with
+	// dynamically loaded application modules placing their static data
+	// directly above it (the built-in pet game constructs objects at
+	// 0x1a6358xx). The handset fits 64 MiB behind each of these two EBI
+	// chip-selects: AMSS runs its heaps and relocated code up to 0x0bffffff
+	// and never touches the upper half of either aperture. The populated
+	// halves are ordinary RAM so the CPU can address them directly; the
+	// unpopulated halves stay page-backed so the complete chip-select window
+	// remains mapped without a further eager host allocation.
 	profile.Memory = append(profile.Memory, MemoryRegionProfile{
-		ID: "w4200-ebi-ram-bank-1", Kind: MemorySparseRAM,
-		Address: 0x08000000, Size: 0x08000000,
+		ID: "w4200-ebi-ram-bank-1", Kind: MemoryRAM,
+		Address: 0x08000000, Size: 0x04000000,
 	}, MemoryRegionProfile{
-		// DC17's final two progressive-ELF records form the Qualcomm shared
-		// configuration segment at 0x18000000..0x1a5e9900. Keep the bounded,
-		// page-aligned aperture sparse because AMSS reads only selected tables.
-		ID: "w4200-shared-config-segment", Kind: MemorySparseRAM,
-		Address: 0x18000000, Size: 0x02600000,
+		ID: "w4200-ebi-ram-bank-1-aperture", Kind: MemorySparseRAM,
+		Address: 0x0c000000, Size: 0x04000000,
+	}, MemoryRegionProfile{
+		ID: "w4200-shared-config-segment", Kind: MemoryRAM,
+		Address: 0x18000000, Size: 0x04000000,
+	}, MemoryRegionProfile{
+		ID: "w4200-shared-config-aperture", Kind: MemorySparseRAM,
+		Address: 0x1c000000, Size: 0x04000000,
 	})
 	// AMSS polls bit 1 of this external-bus status word until the controller is
 	// ready. No write to the status address occurs during initialization.
@@ -4385,7 +4600,10 @@ func enableMSM6280VectoredInterruptGroups(profile *BoardProfile) {
 	interrupts := *profile.VectoredInterrupt
 	interrupts.GroupCount = 6
 	interrupts.Groups = [qualcommVICMaximumGroups]QualcommVectoredInterruptGroupConfig{
-		{Source: 11, EnableOffset: 0x10, StatusOffset: 0x84, ValidMask: 0x07},
+		// Group 11 carries the three application-DSP interrupt lines. The DSP
+		// pulses them; the dispatcher clears a child through +0x10 before it
+		// calls the registered handler.
+		{Source: 11, EnableOffset: 0x10, StatusOffset: 0x84, ValidMask: 0x07, LatchedMask: 0x07},
 		{Source: 14, EnableOffset: 0x14, StatusOffset: 0x88, ValidMask: 0x03},
 		{Source: 17, EnableOffset: 0x18, StatusOffset: 0x8c, ValidMask: 0x3f},
 		{Source: 19, EnableOffset: 0x1c, StatusOffset: 0x90, ValidMask: 0x0f},

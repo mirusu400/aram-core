@@ -93,18 +93,18 @@ func routeHoist26AssertRun(t *testing.T, precise, jit *Backend, start uint32, mo
 
 func TestThumbApplicationPrivateRouteEntryTLBMatchesPrecise(t *testing.T) {
 	for _, load := range []struct {
-		name string
-		raw uint16
-		want uint32
+		name      string
+		raw       uint16
+		want      uint32
 		dedicated bool
 	}{
-		{"word", 0x6808, 0x040380fe, false},           // LDRr0,[r1,#0].
-		{"byte", 0x7808, 0xfe, false},                // LDRBr0,[r1,#0].
-		{"half", 0x8808, 0x80fe, false},              // LDRHr0,[r1,#0].
-		{"register-byte", 0x5c88, 0xfe, false},       // LDRBr0,[r1,r2].
-		{"register-half", 0x5a88, 0x80fe, false},     // LDRHr0,[r1,r2].
-		{"signed-byte", 0x5688, 0xfffffffe, false},   // LDRSBr0,[r1,r2].
-		{"signed-half", 0x5e88, 0xffff80fe, false},   // LDRSHr0,[r1,r2].
+		{"word", 0x6808, 0x040380fe, false},         // LDRr0,[r1,#0].
+		{"byte", 0x7808, 0xfe, false},               // LDRBr0,[r1,#0].
+		{"half", 0x8808, 0x80fe, false},             // LDRHr0,[r1,#0].
+		{"register-byte", 0x5c88, 0xfe, false},      // LDRBr0,[r1,r2].
+		{"register-half", 0x5a88, 0x80fe, false},    // LDRHr0,[r1,r2].
+		{"signed-byte", 0x5688, 0xfffffffe, false},  // LDRSBr0,[r1,r2].
+		{"signed-half", 0x5e88, 0xffff80fe, false},  // LDRSHr0,[r1,r2].
 		{"literal-word", 0x4801, 0x78563412, true},  // LDRr0,[PC,#4] at1ffc, pool2004.
 		{"sp-word", 0x9800, 0x040380fe, true},       // LDRr0,[SP,#0].
 		{"register-word", 0x5888, 0x040380fe, true}, // LDRr0,[r1,r2].
@@ -307,9 +307,9 @@ func TestThumbApplicationPrivateRouteContextRefresh(t *testing.T) {
 // A failed serialized restore must not mutate this same backend. This is not a
 // raw-pending-flags equality requirement across the independent New/JIT pair.
 type routeHoist26SliceIdentity struct {
-	first *byte
+	first            *byte
 	length, capacity int
-	nilSlice bool
+	nilSlice         bool
 }
 
 func routeHoist26SliceID(data []byte) routeHoist26SliceIdentity {
@@ -322,8 +322,8 @@ func routeHoist26SliceID(data []byte) routeHoist26SliceIdentity {
 
 type routeHoist26CacheEntryView struct {
 	address uint32
-	perms cpu.Permissions
-	slice routeHoist26SliceIdentity
+	perms   cpu.Permissions
+	slice   routeHoist26SliceIdentity
 }
 
 func routeHoist26CacheView(entries []dataRegionCache) []routeHoist26CacheEntryView {
@@ -364,9 +364,9 @@ func routeHoist26AssertFailedRestoreAtomic(t *testing.T, b *Backend, beforeState
 	beforeBlock := b.jitBlocks[0x1000]
 	type savedRegion struct {
 		address, size uint32
-		permissions cpu.Permissions
-		slice routeHoist26SliceIdentity
-		data []byte
+		permissions   cpu.Permissions
+		slice         routeHoist26SliceIdentity
+		data          []byte
 	}
 	regions := make([]savedRegion, len(b.regions))
 	for i, region := range b.regions {
@@ -416,7 +416,6 @@ func routeHoist26AssertFailedRestoreAtomic(t *testing.T, b *Backend, beforeState
 		t.Fatal("failed restore or state observation changed an unexpected counter")
 	}
 }
-
 
 // Every field is comparable, so == compares *byte by address rather than
 // reflect.DeepEqual's pointed-to byte contents.
