@@ -599,7 +599,10 @@ type BoardProfile struct {
 	AddressedStorageWindows                   []AddressedStorageWindowProfile
 	SamsungMGP                                *SamsungMGPProfile
 	ADSPMailbox                               *QualcommADSPMailboxProfile
-	HLECalls                                  []HLECallProfile
+	// CoherentInstructionCache marks firmware that never depends on stale
+	// instruction-cache lines, so the CPU need not model them.
+	CoherentInstructionCache bool
+	HLECalls                 []HLECallProfile
 }
 
 // QualcommInterruptCascadeProfile routes the enabled output of the legacy QIC
@@ -3630,6 +3633,11 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 	// ARM interface at these addresses; they are entries 0x694-0x6c0 and 0x830
 	// of that image's variable table. qglDSPSrvInit waits for the initialised
 	// marker, then submits command arrays through qgldsp_command.
+	// DC17 invalidates the instruction cache whenever it loads or patches
+	// code, so nothing it runs depends on a stale line. Its 3D titles spend
+	// most of their time in ARM-mode library code far larger than the
+	// cache, where modelling every eviction roughly halves emulation speed.
+	profile.CoherentInstructionCache = true
 	profile.GraphicsDSP = &QualcommGraphicsDSPProfile{
 		MemoryID:      "adsp-address-space",
 		ResetOffset:   0x00c00000,

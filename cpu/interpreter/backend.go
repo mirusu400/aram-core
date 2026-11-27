@@ -289,8 +289,11 @@ type Backend struct {
 	// only while CP15 enables it, which no application machine does. It is a
 	// pointer so an application backend carries eight bytes rather than the
 	// whole table.
-	instructionCacheTable  *[instructionCacheSets]instructionCacheEntry
-	instructionCacheSerial uint64
+	instructionCacheTable *[instructionCacheSets]instructionCacheEntry
+	// instructionCacheCoherent turns the shadow off for a machine whose
+	// firmware never depends on stale lines; fetches then read memory.
+	instructionCacheCoherent bool
+	instructionCacheSerial   uint64
 	// instructionWindow is the line currently feeding the execution loops. A
 	// non-zero tag is (virtual PC >> 5) + 1, so a straight ARM run pays one tag
 	// comparison for seven of the eight words in a 32-byte line instead of

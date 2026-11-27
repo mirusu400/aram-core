@@ -423,3 +423,45 @@ func TestARM926InstructionCacheHonorsSectionCacheability(t *testing.T) {
 		t.Fatalf("uncacheable section result = %d, want 3", got)
 	}
 }
+
+func TestARM926CoherentInstructionCacheFollowsMemory(t *testing.T) {
+	for _, mode := range []cpu.Mode{cpu.ModeARM, cpu.ModeThumb} {
+		backend := New()
+		check(t, backend.Map(
+			0x1000, 0x100,
+			cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute,
+		))
+		write := func(value uint32) {
+			var code [4]byte
+			if mode == cpu.ModeARM {
+				binary.LittleEndian.PutUint32(code[:], 0xe3a00000|value) // MOV r0, #value
+			} else {
+				binary.LittleEndian.PutUint16(code[:], uint16(0x2000|value)) // MOVS r0, #value
+			}
+			check(t, backend.WriteMemory(0x1000, code[:]))
+		}
+		run := func() uint32 {
+			check(t, backend.WriteRegister(cpu.RegisterR0, 0))
+			if result := backend.Run(context.Background(), 0x1000, mode, 1); result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			return register(t, backend, cpu.RegisterR0)
+		}
+		check(t, backend.SetInstructionCacheCoherent(true))
+		backend.setCP15Control(1 << 12)
+		write(1)
+		if got := run(); got != 1 {
+			t.Fatalf("mode %v: first result = %d", mode, got)
+		}
+		// With no invalidation the coherent cache still sees the new code.
+		write(2)
+		if got := run(); got != 2 {
+			t.Fatalf("mode %v: coherent cache ran stale code, result = %d", mode, got)
+		}
+		// Switching the model back on keeps executing correctly.
+		check(t, backend.SetInstructionCacheCoherent(false))
+		if got := run(); got != 2 {
+			t.Fatalf("mode %v: result after re-enabling the model = %d", mode, got)
+		}
+	}
+}

@@ -1186,6 +1186,15 @@ func newSamsungQualcommMachine(
 	if err := handoff.Apply(bus, backend); err != nil {
 		return fail(fmt.Errorf("apply %s PBL handoff: %w", firmwareProfile.Model, err))
 	}
+	if board.CoherentInstructionCache {
+		if coherent, ok := backend.(interface {
+			SetInstructionCacheCoherent(bool) error
+		}); ok {
+			if err := coherent.SetInstructionCacheCoherent(true); err != nil {
+				return fail(fmt.Errorf("configure %s instruction cache: %w", firmwareProfile.Model, err))
+			}
+		}
+	}
 	resetCPUState, err := backend.SaveContext()
 	if err != nil {
 		return fail(fmt.Errorf("capture %s reset CPU state: %w", firmwareProfile.Model, err))
