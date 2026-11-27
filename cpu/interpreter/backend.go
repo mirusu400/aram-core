@@ -170,11 +170,12 @@ type Backend struct {
 	// same few blocks repeatedly, so caching (pc -> block) in a fixed array
 	// skips the map hash+lookup that otherwise dominates block dispatch. jitGen
 	// is bumped on every invalidation of jitBlocks; an entry whose gen no longer
-	// matches is treated as a miss, so the cache never returns a stale block
-	// without touching the array on the (rare) invalidation path.
-	jitCache    []jitCacheSet
-	armJITCache []jitCacheSet
-	jitGen      uint64
+	// matches is treated as a miss. A full flush also drops the cached
+	// pointers, which can retain chains of decoded blocks.
+	jitCache     []jitCacheSet
+	armJITCache  []jitCacheSet
+	jitGen       uint64
+	jitCacheCost int
 	// jitCodeLo/jitCodeHi bound the guest-address span of every translated
 	// block. smcInvalidate uses them to invalidate only on a write that
 	// overlaps translated code, not on the blitter's ordinary framebuffer
@@ -679,19 +680,7 @@ func (b *Backend) Map(address, size uint32, permissions cpu.Permissions) error {
 	b.clearDataCaches()
 	b.virtualData = nil
 	b.tlbClear()
-	if b.jitBlocks != nil {
-		clear(b.jitBlocks)
-		clear(b.jitBlockPages)
-	}
-	if b.armJITBlocks != nil {
-		clear(b.armJITBlocks)
-		clear(b.armJITBlockPages)
-	}
-	if b.jitBlocks != nil || b.armJITBlocks != nil {
-		b.jitGen++
-		clear(b.jitCodePages)
-		b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
-	}
+	b.resetDecodedTranslations()
 	b.nativeInvalidate()
 	return nil
 }
@@ -989,41 +978,23 @@ func (b *Backend) Close() error {
 	b.executeData = nil
 	b.clearDataCaches()
 	b.virtualData = nil
-	if b.jitBlocks != nil {
-		clear(b.jitBlocks)
-		clear(b.jitBlockPages)
-		clear(b.armJITBlocks)
-		clear(b.armJITBlockPages)
-		b.jitGen++
-		b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
-	}
+	b.jitBlocks, b.armJITBlocks = nil, nil
+	b.jitBlockPages, b.armJITBlockPages = nil, nil
+	b.jitCache, b.armJITCache = nil, nil
+	b.jitCodePages = nil
+	b.jitCacheCost = 0
 	if b.nativeBlocks != nil {
-		clear(b.nativeBlocks)
-		clear(b.nativeBlockPages)
-		clear(b.nativeARMBlocks)
-		clear(b.nativeARMBlockPages)
-		for _, slot := range b.nativeLinks {
-			slot.Store(0)
-		}
-		clear(b.nativeLinks)
-		clear(b.nativeSlow)
 		b.nativeCloseArena()
 		b.nativeBlocks = nil
 		b.nativeBlockPages = nil
 		b.nativeARMBlocks = nil
 		b.nativeARMBlockPages = nil
+		b.nativeCache, b.nativeARMCache = nil, nil
 		b.nativeLinks = nil
 		b.nativeSlow = nil
-		b.nativeCodeLo, b.nativeCodeHi = ^uint32(0), 0
+		b.nativeCodePages = nil
 		b.tlbClear()
 		b.tlb = nil
-	}
-	if b.armJITBlocks != nil {
-		clear(b.armJITBlocks)
-		b.armJITBlocks = nil
-		b.armJITBlockPages = nil
-		b.armJITCache = nil
-		b.jitCodePages = nil
 	}
 	b.mapped = 0
 	return nil

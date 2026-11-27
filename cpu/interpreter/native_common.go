@@ -51,6 +51,10 @@ const (
 // in a megabyte (메이플스토리 uses 1.2 MiB) still occupies only that much.
 const nativeArenaSize = uintptr(128 << 20)
 
+// Fallback entries consume no executable bytes. Limit both mode maps so they
+// cannot grow indefinitely while the executable arena stays below capacity.
+const nativeBlockLimit = 128 << 10
+
 // nativeBailStatus packs the block status a software-TLB miss returns: the low
 // byte is nativeStatusBail and the rest is retired, the number of instructions
 // the block had already retired when it bailed. The budget gate at the top of a
@@ -410,9 +414,7 @@ func (b *Backend) nativeInvalidate() {
 	clear(b.nativeBlockPages)
 	clear(b.nativeARMBlocks)
 	clear(b.nativeARMBlockPages)
-	for _, slot := range b.nativeLinks {
-		slot.Store(0)
-	}
+	clear(b.nativeLinks)
 	clear(b.nativeSlow)
 	b.nativeGen++
 	clear(b.nativeCodePages)
@@ -436,6 +438,12 @@ func (b *Backend) cacheNativeARMBlock(pc uint32, block *nativeBlock) {
 	b.nativeARMBlocks[pc] = block
 	b.nativeARMBlockPages.add(pc)
 	b.recordTranslatedNativeBlock(block)
+}
+
+func (b *Backend) reserveNativeCacheEntry() {
+	if len(b.nativeBlocks)+len(b.nativeARMBlocks) >= nativeBlockLimit {
+		b.nativeInvalidate()
+	}
 }
 
 func (b *Backend) recordTranslatedNativeBlock(block *nativeBlock) {

@@ -129,6 +129,7 @@ func (b *Backend) nativeARMBlockAt(pc uint32) *nativeBlock {
 	}
 	block, ok := b.nativeARMBlocks[pc]
 	if !ok {
+		b.reserveNativeCacheEntry()
 		block = b.translateNativeARMBlock(pc)
 		b.cacheNativeARMBlock(pc, block)
 	}
@@ -185,18 +186,9 @@ func (b *Backend) translateNativeARMBlock(pc uint32) *nativeBlock {
 		term.next = cur
 	}
 
-	main := b.newEmitter()
-	main.prologue()
-	gateOff := main.mark()
-	main.gate(count, pc)
-	main.appendCode(body.code())
-	b.emitNativeTerminator(main, cpu.ModeARM, term, pc, gateOff)
-	entry := b.arenaAppend(main.code())
+	entry, gate := b.appendNativeBlock(body, cpu.ModeARM, term, pc, count)
 	if entry == 0 {
-		b.nativeInvalidate()
-		if entry = b.arenaAppend(main.code()); entry == 0 {
-			return nil
-		}
+		return nil
 	}
 	grew := b.markCodePages(pc, end-pc)
 	if pc < b.nativeCodeLo {
@@ -208,7 +200,6 @@ func (b *Backend) translateNativeARMBlock(pc uint32) *nativeBlock {
 	if grew {
 		b.tlbClearWrite()
 	}
-	gate := entry + uintptr(gateOff)
 	b.publishNativeLink(cpu.ModeARM, pc, gate)
 	return &nativeBlock{
 		start: pc, end: end, mode: cpu.ModeARM,

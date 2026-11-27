@@ -1210,11 +1210,6 @@ func TestNativeRangeInvalidationSkipsRangesHoldingNoTranslatedCode(t *testing.T)
 	}
 }
 
-// Link slots outlive the blocks that published them: nativeInvalidate can only
-// zero them, because its other caller is an in-progress translation holding
-// their addresses. A full translation flush is the safe point to reclaim the
-// map, and without that it grows one entry per branch target for the life of
-// the backend.
 func TestNativeFullInvalidationReclaimsLinkSlots(t *testing.T) {
 	backend, bus := newNativeSystemBackend(t)
 	putThumb(bus.ram, 0x1000, 0x2001, 0xe07d) // movs r0,#1; b 0x1100
@@ -1232,6 +1227,63 @@ func TestNativeFullInvalidationReclaimsLinkSlots(t *testing.T) {
 	}
 	if len(backend.nativeBlocks) != 0 || len(backend.nativeBlockPages) != 0 {
 		t.Fatal("full invalidation retained blocks or their page index")
+	}
+}
+
+func TestNativeArenaRolloverReclaimsAndRebuildsLinkSlots(t *testing.T) {
+	backend, bus := newNativeSystemBackend(t)
+	putThumb(bus.ram, 0x1000, 0x2001, 0xe07d) // movs r0,#1; b 0x1100
+	putThumb(bus.ram, 0x1100, 0x3002, 0xbe00) // adds r0,#2; bkpt
+	putThumb(bus.ram, 0x1200, 0xbe00)
+	if backend.nativeBlockAt(0x1200) == nil || backend.nativeBlockAt(0x1100) == nil {
+		t.Fatal("failed to populate the old arena")
+	}
+	target := nativeLinkKey{mode: cpu.ModeThumb, pc: 0x1100}
+	oldSlot := backend.nativeLinks[target]
+
+	backend.nativeArena.off = backend.nativeArena.size
+	result := backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 4)
+	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
+		t.Fatalf("run across arena rollover = %+v", result)
+	}
+	if got := immediateMemoryRegisterValue(t, backend, cpu.RegisterR0); got != 3 {
+		t.Fatalf("r0 after arena rollover = %d, want 3", got)
+	}
+	if backend.nativeLinks[target] == oldSlot ||
+		backend.nativeLinks[nativeLinkKey{mode: cpu.ModeThumb, pc: 0x1200}] != nil {
+		t.Fatal("arena rollover retained old link slots")
+	}
+	// Run again now that both blocks are published so the source can link
+	// directly through the rebuilt target slot.
+	result = backend.Run(context.Background(), 0x1000, cpu.ModeThumb, 4)
+	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
+		t.Fatalf("linked run after arena rollover = %+v", result)
+	}
+}
+
+func TestNativeTranslationBudgetFlushesFallbackEntries(t *testing.T) {
+	backend := NewNativeJIT()
+	t.Cleanup(func() { _ = backend.Close() })
+	if backend.nativeArena == nil {
+		t.Skip("native arena unavailable")
+	}
+
+	for pc := uint32(0); pc < 2*nativeBlockLimit; pc += 4 {
+		if backend.nativeBlockAt(pc) != nil || backend.nativeARMBlockAt(pc) != nil {
+			t.Fatalf("unmapped PC %#x unexpectedly translated", pc)
+		}
+	}
+	if len(backend.nativeBlocks)+len(backend.nativeARMBlocks) != nativeBlockLimit {
+		t.Fatal("failed to fill the fallback cache")
+	}
+	if backend.nativeArena.off != 0 {
+		t.Fatal("fallback entries consumed executable space")
+	}
+
+	backend.nativeARMBlockAt(2 * nativeBlockLimit)
+	if len(backend.nativeBlocks) != 0 || len(backend.nativeARMBlocks) != 1 ||
+		len(backend.nativeBlockPages) != 0 || len(backend.nativeARMBlockPages) != 1 {
+		t.Fatal("cache budget reset retained old fallback entries or page indexes")
 	}
 }
 

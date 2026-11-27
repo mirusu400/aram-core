@@ -112,3 +112,33 @@ func TestARMJITDispatchCacheRetainsTwoCollidingBlocks(t *testing.T) {
 		t.Fatalf("second colliding ARM lookup = %p, want %p", block, second)
 	}
 }
+
+func TestDecodedTranslationBudgetFlushesBothModes(t *testing.T) {
+	backend := NewJIT()
+	t.Cleanup(func() { _ = backend.Close() })
+	const thumbPC = 0x1000
+	const armPC = 0x2000
+	check(t, backend.Map(thumbPC, 0x2000, cpu.PermissionRead|cpu.PermissionWrite|cpu.PermissionExecute))
+	check(t, backend.WriteMemory(thumbPC, thumbTestCode(0x2001, 0x3002, 0xbe00)))
+	check(t, backend.WriteMemory(armPC, []byte{0x00, 0x00, 0xa0, 0xe1}))
+	if backend.jitBlockAt(thumbPC) == nil || backend.armJITBlockAt(armPC) == nil {
+		t.Fatal("failed to populate both dispatch caches")
+	}
+
+	backend.jitCacheCost = jitCacheBudget
+	result := backend.Run(context.Background(), thumbPC+2, cpu.ModeThumb, 2)
+	if result.Err != nil || result.Reason != cpu.StopBreakpoint {
+		t.Fatalf("run after cache budget reset = %+v", result)
+	}
+	if len(backend.jitBlocks) != 1 || len(backend.armJITBlocks) != 0 ||
+		len(backend.jitBlockPages) != 1 || len(backend.armJITBlockPages) != 0 {
+		t.Fatal("cache budget reset retained old blocks or page index entries")
+	}
+	if backend.jitCache[thumbPC>>1&(jitCacheSize-1)] != (jitCacheSet{}) ||
+		backend.armJITCache[armPC>>2&(jitCacheSize-1)] != (jitCacheSet{}) {
+		t.Fatal("cache budget reset retained old dispatch pointers")
+	}
+	if got := immediateMemoryRegisterValue(t, backend, cpu.RegisterR0); got != 2 {
+		t.Fatalf("r0 after cache budget reset = %d, want 2", got)
+	}
+}

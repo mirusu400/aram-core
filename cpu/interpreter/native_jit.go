@@ -197,6 +197,7 @@ func (b *Backend) nativeBlockAt(pc uint32) *nativeBlock {
 	}
 	block, ok := b.nativeBlocks[pc]
 	if !ok {
+		b.reserveNativeCacheEntry()
 		block = b.translateNativeBlock(pc)
 		b.cacheNativeBlock(pc, block)
 	}
@@ -253,19 +254,9 @@ func (b *Backend) translateNativeBlock(pc uint32) *nativeBlock {
 	}
 
 	// Phase 2: prologue, budget gate (the self-loop header), body, terminator.
-	main := b.newEmitter()
-	main.prologue()
-	gateOff := main.mark()
-	main.gate(count, pc)
-	main.appendCode(body.code())
-	b.emitNativeTerminator(main, cpu.ModeThumb, term, pc, gateOff)
-
-	entry := b.arenaAppend(main.code())
+	entry, gate := b.appendNativeBlock(body, cpu.ModeThumb, term, pc, count)
 	if entry == 0 {
-		b.nativeInvalidate()
-		if entry = b.arenaAppend(main.code()); entry == 0 {
-			return nil
-		}
+		return nil
 	}
 	// Grow the translated-code span so smcInvalidate can tell a real
 	// self-modifying write from the guest blitter writing pixels into the same
@@ -284,12 +275,33 @@ func (b *Backend) translateNativeBlock(pc uint32) *nativeBlock {
 		// executions, so no block is holding a stale entry.
 		b.tlbClearWrite()
 	}
-	gate := entry + uintptr(gateOff)
 	b.publishNativeLink(cpu.ModeThumb, pc, gate)
 	return &nativeBlock{
 		start: pc, end: end, mode: cpu.ModeThumb,
 		count: count, entry: entry, gate: gate,
 	}
+}
+
+func (b *Backend) appendNativeBlock(
+	body emitter, mode cpu.Mode, term terminator, pc uint32, count int,
+) (entry, gate uintptr) {
+	for attempt := range 2 {
+		if attempt != 0 {
+			// The old terminator embedded pointers to link slots in the old
+			// arena generation. Emit it again with the new slots.
+			b.nativeInvalidate()
+		}
+		main := b.newEmitter()
+		main.prologue()
+		gateOff := main.mark()
+		main.gate(count, pc)
+		main.appendCode(body.code())
+		b.emitNativeTerminator(main, mode, term, pc, gateOff)
+		if entry := b.arenaAppend(main.code()); entry != 0 {
+			return entry, entry + uintptr(gateOff)
+		}
+	}
+	return 0, 0
 }
 
 func (b *Backend) emitNativeTerminator(

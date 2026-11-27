@@ -211,6 +211,12 @@ func (b *Backend) JITExecutionState() JITExecutionState {
 
 const jitMaxBlock = 256
 
+// Weigh each decoded entry by its index/metadata overhead and the capacity of
+// its instruction slices. Count every insertion until the next full flush:
+// dispatch entries and successor links can still reference blocks removed by
+// range invalidation.
+const jitCacheBudget = 2 << 20
+
 // smcInvalidate drops the translated-block cache when a write lands in
 // executable memory, so self-modifying or freshly loaded code never runs from a
 // stale translation. It is a cheap nil check when the JIT is disabled.
@@ -290,15 +296,28 @@ const (
 // from its index is invisible to range invalidation, so it would outlive the
 // guest code it was decoded from.
 func (b *Backend) cacheJITBlock(pc uint32, block *jitBlock) {
+	b.reserveJITCacheEntry(block)
 	b.jitBlocks[pc] = block
 	b.jitBlockPages.add(pc)
 	b.recordTranslatedBlock(block)
 }
 
 func (b *Backend) cacheARMJITBlock(pc uint32, block *jitBlock) {
+	b.reserveJITCacheEntry(block)
 	b.armJITBlocks[pc] = block
 	b.armJITBlockPages.add(pc)
 	b.recordTranslatedBlock(block)
+}
+
+func (b *Backend) reserveJITCacheEntry(block *jitBlock) {
+	cost := 16
+	if block != nil {
+		cost += cap(block.arm) + cap(block.thumb) + cap(block.instructionCacheGuards)
+	}
+	if b.jitCacheCost+cost > jitCacheBudget {
+		b.resetDecodedTranslations()
+	}
+	b.jitCacheCost += cost
 }
 
 func (b *Backend) recordTranslatedBlock(block *jitBlock) {
@@ -413,28 +432,24 @@ func (b *Backend) invalidateTranslationRange(address, size uint32) {
 // is not sufficient for them.
 func (b *Backend) invalidateTranslations() {
 	b.executionStatistics.TranslationInvalidations++
-	if b.jitBlocks != nil {
-		clear(b.jitBlocks)
-		clear(b.jitBlockPages)
-	}
-	if b.armJITBlocks != nil {
-		clear(b.armJITBlocks)
-		clear(b.armJITBlockPages)
-	}
-	if b.jitBlocks != nil || b.armJITBlocks != nil {
-		b.jitGen++
-		clear(b.jitCodePages)
-		b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
-	}
+	b.resetDecodedTranslations()
 	b.nativeInvalidate()
-	// nativeInvalidate cannot drop the link slots themselves: its other caller
-	// is the arena-full retry inside a translator, which by then has the slot
-	// addresses baked into a buffer it has not appended yet, so releasing the
-	// last Go reference would let the collector free memory that emitted code
-	// is about to jump through. Nothing is mid-translation on this path, and
-	// every block is gone, so here the map can be reclaimed - otherwise it only
-	// ever grows, one entry per branch target ever translated.
-	clear(b.nativeLinks)
+}
+
+func (b *Backend) resetDecodedTranslations() {
+	if b.jitBlocks == nil && b.armJITBlocks == nil {
+		return
+	}
+	clear(b.jitBlocks)
+	clear(b.jitBlockPages)
+	clear(b.jitCache)
+	clear(b.armJITBlocks)
+	clear(b.armJITBlockPages)
+	clear(b.armJITCache)
+	b.jitCacheCost = 0
+	b.jitGen++
+	clear(b.jitCodePages)
+	b.jitCodeLo, b.jitCodeHi = ^uint32(0), 0
 }
 
 // runThumbJIT executes Thumb from b.regs[PC] using translated blocks, retiring
