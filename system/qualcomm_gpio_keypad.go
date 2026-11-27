@@ -18,7 +18,12 @@ var ErrQualcommGPIOKeypad = errors.New("invalid Qualcomm GPIO keypad operation")
 // register. Keys provide stable host-facing names without changing the
 // electrical matrix model.
 type QualcommGPIOKeypadProfile struct {
-	Columns          []uint8
+	Columns []uint8
+	// AuxiliaryColumns are further sense lines of the same matrix which the
+	// board wires to a boot-control GPIO input word instead of the
+	// primary-clock input register. They are numbered after Columns: the
+	// first auxiliary column is column len(Columns).
+	AuxiliaryColumns []QualcommGPIOKeypadAuxiliaryColumnProfile
 	Rows             []QualcommGPIOKeypadRowProfile
 	Keys             []QualcommGPIOKeyProfile
 	InterruptGroups  []QualcommGPIOInterruptGroupProfile
@@ -36,6 +41,13 @@ type QualcommGPIOKeypadRowProfile struct {
 	OutputBank   QualcommGPIOOutputBank
 	OutputOffset uint32
 	OutputMask   uint32
+}
+
+// QualcommGPIOKeypadAuxiliaryColumnProfile names one active-low sense bit of a
+// profiled boot-control GPIO input word.
+type QualcommGPIOKeypadAuxiliaryColumnProfile struct {
+	Offset uint32
+	Bit    uint8
 }
 
 type QualcommGPIOKeyProfile struct {
@@ -128,7 +140,7 @@ func NewQualcommGPIOKeypad(profile QualcommGPIOKeypadProfile) (*QualcommGPIOKeyp
 	keypad := &QualcommGPIOKeypad{
 		profile:          profile,
 		fingerprint:      fingerprintQualcommGPIOKeypadProfile(profile),
-		pressed:          make([]bool, len(profile.Rows)*len(profile.Columns)),
+		pressed:          make([]bool, len(profile.Rows)*profile.columnCount()),
 		keysByID:         make(map[string]int, len(profile.Keys)),
 		interruptGroups:  make([]qualcommGPIOInterruptGroupState, len(profile.InterruptGroups)),
 		columnInterrupts: make(map[uint8]QualcommGPIOKeypadColumnInterruptProfile, len(profile.ColumnInterrupts)),
@@ -158,8 +170,23 @@ func NewQualcommGPIOKeypad(profile QualcommGPIOKeypadProfile) (*QualcommGPIOKeyp
 }
 
 func (p QualcommGPIOKeypadProfile) validate() error {
-	if len(p.Columns) == 0 || len(p.Columns) > 32 || len(p.Rows) == 0 || len(p.Rows) > 256 {
+	if len(p.Columns) == 0 || len(p.Columns) > 32 || len(p.AuxiliaryColumns) > 32 ||
+		len(p.Rows) == 0 || len(p.Rows) > 256 {
 		return fmt.Errorf("%w: empty or oversized matrix", ErrQualcommGPIOKeypad)
+	}
+	auxiliary := make(map[QualcommGPIOKeypadAuxiliaryColumnProfile]struct{}, len(p.AuxiliaryColumns))
+	for _, column := range p.AuxiliaryColumns {
+		if column.Offset%4 != 0 || column.Bit >= 32 {
+			return fmt.Errorf(
+				"%w: auxiliary column at 0x%x bit %d", ErrQualcommGPIOKeypad, column.Offset, column.Bit,
+			)
+		}
+		if _, duplicate := auxiliary[column]; duplicate {
+			return fmt.Errorf(
+				"%w: duplicate auxiliary column at 0x%x bit %d", ErrQualcommGPIOKeypad, column.Offset, column.Bit,
+			)
+		}
+		auxiliary[column] = struct{}{}
 	}
 	columns := make(map[uint8]struct{}, len(p.Columns))
 	for _, line := range p.Columns {
@@ -195,7 +222,7 @@ func (p QualcommGPIOKeypadProfile) validate() error {
 	coordinates := make(map[[2]uint8]struct{}, len(p.Keys))
 	for _, key := range p.Keys {
 		coordinate := [2]uint8{key.Row, key.Column}
-		if !validProfileID(key.ID) || int(key.Row) >= len(p.Rows) || int(key.Column) >= len(p.Columns) {
+		if !validProfileID(key.ID) || int(key.Row) >= len(p.Rows) || int(key.Column) >= p.columnCount() {
 			return fmt.Errorf("%w: key %q at row %d column %d", ErrQualcommGPIOKeypad, key.ID, key.Row, key.Column)
 		}
 		if _, duplicate := ids[key.ID]; duplicate {
@@ -255,8 +282,17 @@ func (p QualcommGPIOKeypadProfile) validate() error {
 	return nil
 }
 
+// columnCount is the matrix width: primary-clock columns followed by the
+// auxiliary ones.
+func (p QualcommGPIOKeypadProfile) columnCount() int {
+	return len(p.Columns) + len(p.AuxiliaryColumns)
+}
+
 func cloneQualcommGPIOKeypadProfile(profile QualcommGPIOKeypadProfile) QualcommGPIOKeypadProfile {
 	profile.Columns = append([]uint8(nil), profile.Columns...)
+	profile.AuxiliaryColumns = append(
+		[]QualcommGPIOKeypadAuxiliaryColumnProfile(nil), profile.AuxiliaryColumns...,
+	)
 	profile.Rows = append([]QualcommGPIOKeypadRowProfile(nil), profile.Rows...)
 	profile.Keys = append([]QualcommGPIOKeyProfile(nil), profile.Keys...)
 	profile.InterruptGroups = append(
@@ -301,6 +337,15 @@ func fingerprintQualcommGPIOKeypadProfile(profile QualcommGPIOKeypadProfile) [sh
 		_ = encoded.WriteByte(interrupt.Column)
 		_ = encoded.WriteByte(interrupt.Group)
 		_ = binary.Write(&encoded, binary.LittleEndian, interrupt.Mask)
+	}
+	// A matrix without auxiliary columns keeps the fingerprint it had before
+	// they existed, so its saved states remain loadable.
+	if len(profile.AuxiliaryColumns) != 0 {
+		_ = binary.Write(&encoded, binary.LittleEndian, uint32(len(profile.AuxiliaryColumns)))
+		for _, column := range profile.AuxiliaryColumns {
+			_ = binary.Write(&encoded, binary.LittleEndian, column.Offset)
+			_ = encoded.WriteByte(column.Bit)
+		}
 	}
 	// Keys are host-facing aliases for matrix coordinates. Adding a discovered
 	// name does not alter the electrical device or its serialized pressed bits.
@@ -414,10 +459,9 @@ func (d *QualcommGPIOKeypad) ObserveGPIOBankWrite(
 // already supplied by the primary-clock GPIO bank.
 func (d *QualcommGPIOKeypad) InputStatus(base uint32) uint32 {
 	status := base
-	columnCount := len(d.profile.Columns)
+	columnCount := d.profile.columnCount()
 	for rowIndex, row := range d.profile.Rows {
-		selector := qualcommGPIOKeypadSelector{bank: row.OutputBank, offset: row.OutputOffset}
-		if d.outputValues[selector]&row.OutputMask == 0 {
+		if !d.rowSelected(row) {
 			continue
 		}
 		for columnIndex, line := range d.profile.Columns {
@@ -429,26 +473,52 @@ func (d *QualcommGPIOKeypad) InputStatus(base uint32) uint32 {
 	return status
 }
 
+func (d *QualcommGPIOKeypad) rowSelected(row QualcommGPIOKeypadRowProfile) bool {
+	selector := qualcommGPIOKeypadSelector{bank: row.OutputBank, offset: row.OutputOffset}
+	return d.outputValues[selector]&row.OutputMask != 0
+}
+
+// ObserveGPIORead applies the auxiliary columns to a boot-control GPIO input
+// word. Like the primary columns they read low only while a pressed key's row
+// is selected; every other bit of the word is returned unchanged.
+func (d *QualcommGPIOKeypad) ObserveGPIORead(offset, value uint32) uint32 {
+	columnCount := d.profile.columnCount()
+	for auxiliaryIndex, column := range d.profile.AuxiliaryColumns {
+		if column.Offset != offset {
+			continue
+		}
+		columnIndex := len(d.profile.Columns) + auxiliaryIndex
+		for rowIndex, row := range d.profile.Rows {
+			if d.rowSelected(row) && d.pressed[rowIndex*columnCount+columnIndex] {
+				value &^= uint32(1) << column.Bit
+			}
+		}
+	}
+	return value
+}
+
+var _ QualcommGPIOReadObserver = (*QualcommGPIOKeypad)(nil)
+
 func (d *QualcommGPIOKeypad) SetKey(id string, pressed bool) error {
 	index, ok := d.keysByID[id]
 	if !ok {
 		return fmt.Errorf("key %q: %w", id, ErrQualcommGPIOKeypad)
 	}
-	columnCount := len(d.profile.Columns)
+	columnCount := d.profile.columnCount()
 	return d.setMatrixKey(index/columnCount, index%columnCount, pressed)
 }
 
 // SetMatrixKey is the low-level equivalent used while identifying an unknown
 // handset's key table. Product frontends should use stable profiled key IDs.
 func (d *QualcommGPIOKeypad) SetMatrixKey(row, column uint8, pressed bool) error {
-	if int(row) >= len(d.profile.Rows) || int(column) >= len(d.profile.Columns) {
+	if int(row) >= len(d.profile.Rows) || int(column) >= d.profile.columnCount() {
 		return fmt.Errorf("row %d column %d: %w", row, column, ErrQualcommGPIOKeypad)
 	}
 	return d.setMatrixKey(int(row), int(column), pressed)
 }
 
 func (d *QualcommGPIOKeypad) setMatrixKey(row, column int, pressed bool) error {
-	index := row*len(d.profile.Columns) + column
+	index := row*d.profile.columnCount() + column
 	if d.pressed[index] == pressed {
 		return nil
 	}
@@ -476,7 +546,7 @@ func (d *QualcommGPIOKeypad) setMatrixKey(row, column int, pressed bool) error {
 }
 
 func (d *QualcommGPIOKeypad) columnActive(column int) bool {
-	columnCount := len(d.profile.Columns)
+	columnCount := d.profile.columnCount()
 	for row := range d.profile.Rows {
 		if d.pressed[row*columnCount+column] {
 			return true
@@ -528,7 +598,7 @@ func (d *QualcommGPIOKeypad) signalInterruptGroup(groupIndex int) error {
 }
 
 func (d *QualcommGPIOKeypad) matrixIndex(row, column uint8) int {
-	return int(row)*len(d.profile.Columns) + int(column)
+	return int(row)*d.profile.columnCount() + int(column)
 }
 
 func (d *QualcommGPIOKeypad) inputMask() uint32 {

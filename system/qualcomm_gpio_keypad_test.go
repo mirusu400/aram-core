@@ -427,3 +427,176 @@ func TestSCHW830ProfileMapsKnownKeypadControls(t *testing.T) {
 		check(t, keypad.SetKey(direction.id, false))
 	}
 }
+
+func testAuxiliaryQualcommGPIOKeypadProfile() QualcommGPIOKeypadProfile {
+	return QualcommGPIOKeypadProfile{
+		Columns:          []uint8{0, 1},
+		AuxiliaryColumns: []QualcommGPIOKeypadAuxiliaryColumnProfile{{Offset: 0x40, Bit: 5}},
+		Rows: []QualcommGPIOKeypadRowProfile{
+			{OutputBank: QualcommGPIOOutputSecondaryClock, OutputOffset: 0x0400, OutputMask: 0x00000400},
+			{OutputBank: QualcommGPIOOutputSecondaryClock, OutputOffset: 0x0400, OutputMask: 0x00000800},
+		},
+		Keys: []QualcommGPIOKeyProfile{
+			{ID: "end", Row: 0, Column: 1},
+			{ID: "send", Row: 0, Column: 2},
+		},
+	}
+}
+
+func TestQualcommGPIOKeypadAuxiliaryColumnFollowsRowSelection(t *testing.T) {
+	keypad, err := NewQualcommGPIOKeypad(testAuxiliaryQualcommGPIOKeypadProfile())
+	check(t, err)
+	inputs, err := NewQualcommInterruptControllerWithConfig(QualcommInterruptControllerConfig{
+		GPIOInputs: []QualcommGPIOInputRegister{{Offset: 0x3c, Value: 0x40000000}, {Offset: 0x40, Value: 0x00000021}},
+	}, nil)
+	check(t, err)
+	check(t, inputs.AttachGPIOReadObserver(keypad))
+	if err := inputs.AttachGPIOReadObserver(keypad); !errors.Is(err, ErrQualcommInterruptControllerMMIO) {
+		t.Fatalf("second GPIO read observer error = %v", err)
+	}
+	read := func(offset uint32) uint32 {
+		t.Helper()
+		value, err := inputs.Read(offset, Width32)
+		check(t, err)
+		return value
+	}
+	selectRows := func(value uint32) {
+		keypad.ObserveGPIOBankWrite(QualcommGPIOOutputSecondaryClock, 0x0400, value)
+	}
+
+	check(t, keypad.SetKey("send", true))
+	selectRows(0x00000c00)
+	if got := read(0x40); got != 0x00000001 {
+		t.Fatalf("pre-scan auxiliary word = %#x, want sense bit low", got)
+	}
+	// The auxiliary key is no primary-clock column and no bit of another word.
+	if got := keypad.InputStatus(0x1f); got != 0x1f {
+		t.Fatalf("primary status with auxiliary key = %#x", got)
+	}
+	if got := read(0x3c); got != 0x40000000 {
+		t.Fatalf("unrelated GPIO input word = %#x", got)
+	}
+	selectRows(0x00000800)
+	if got := read(0x40); got != 0x00000021 {
+		t.Fatalf("auxiliary word with the other row selected = %#x", got)
+	}
+	selectRows(0x00000400)
+	if got := read(0x40); got != 0x00000001 {
+		t.Fatalf("auxiliary word with its row selected = %#x", got)
+	}
+	check(t, keypad.SetKey("send", false))
+	check(t, keypad.SetKey("end", true))
+	if got, status := read(0x40), keypad.InputStatus(0x1f); got != 0x00000021 || status != 0x1d {
+		t.Fatalf("primary key: auxiliary word %#x status %#x", got, status)
+	}
+
+	state, err := keypad.SaveState()
+	check(t, err)
+	restored, err := NewQualcommGPIOKeypad(testAuxiliaryQualcommGPIOKeypadProfile())
+	check(t, err)
+	check(t, restored.LoadState(state))
+	if got := restored.InputStatus(0x1f); got != 0x1d {
+		t.Fatalf("restored status = %#x", got)
+	}
+	// A matrix of another width is a different device.
+	narrower := testAuxiliaryQualcommGPIOKeypadProfile()
+	narrower.AuxiliaryColumns = nil
+	narrower.Keys = narrower.Keys[:1]
+	other, err := NewQualcommGPIOKeypad(narrower)
+	check(t, err)
+	if err := other.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("auxiliary state in a narrower matrix error = %v", err)
+	}
+
+	for _, column := range []QualcommGPIOKeypadAuxiliaryColumnProfile{
+		{Offset: 0x42, Bit: 5}, {Offset: 0x40, Bit: 32},
+	} {
+		invalid := testAuxiliaryQualcommGPIOKeypadProfile()
+		invalid.AuxiliaryColumns = []QualcommGPIOKeypadAuxiliaryColumnProfile{column}
+		if _, err := NewQualcommGPIOKeypad(invalid); !errors.Is(err, ErrQualcommGPIOKeypad) {
+			t.Fatalf("auxiliary column %+v error = %v", column, err)
+		}
+	}
+	duplicate := testAuxiliaryQualcommGPIOKeypadProfile()
+	duplicate.AuxiliaryColumns = append(duplicate.AuxiliaryColumns, duplicate.AuxiliaryColumns[0])
+	if _, err := NewQualcommGPIOKeypad(duplicate); !errors.Is(err, ErrQualcommGPIOKeypad) {
+		t.Fatalf("duplicate auxiliary column error = %v", err)
+	}
+}
+
+func TestQualcommPolledGPIOKeypadSharesPrimaryClockWithTouchscreen(t *testing.T) {
+	build := func() (*QualcommPrimaryClockControl, *QualcommGPIOKeypad, *QualcommTSC2007) {
+		t.Helper()
+		touchProfile := testQualcommTSC2007Profile()
+		primary, err := NewQualcommPrimaryClockControl(QualcommPrimaryClockConfig{
+			Status: 0x1f, InputMask: 0x1f,
+			WritableOffsets: []uint32{
+				touchProfile.InterruptGroup.ClearOffset, touchProfile.InterruptGroup.EnableOffset,
+				touchProfile.InterruptGroup.DetectOffset, touchProfile.InterruptGroup.PolarityOffset,
+			},
+		})
+		check(t, err)
+		touchscreen, err := NewQualcommTSC2007(touchProfile)
+		check(t, err)
+		keypad, err := NewQualcommGPIOKeypad(testAuxiliaryQualcommGPIOKeypadProfile())
+		check(t, err)
+		check(t, primary.AttachTouchscreen(touchscreen))
+		check(t, primary.AttachGPIOKeypad(keypad))
+		return primary, keypad, touchscreen
+	}
+	primary, keypad, touchscreen := build()
+	check(t, keypad.SetKey("end", true))
+	keypad.ObserveGPIOBankWrite(QualcommGPIOOutputSecondaryClock, 0x0400, 0x00000400)
+	check(t, touchscreen.SetTouch(10, 20, true))
+	if got := primary.InputStatus(); got != 0x1d {
+		t.Fatalf("shared aperture input status = %#x", got)
+	}
+
+	state, err := primary.SaveState()
+	check(t, err)
+	restoredPrimary, _, restoredTouchscreen := build()
+	check(t, restoredPrimary.LoadState(state))
+	if got := restoredPrimary.InputStatus(); got != 0x1d {
+		t.Fatalf("restored shared input status = %#x", got)
+	}
+	wantTouch, err := touchscreen.SaveState()
+	check(t, err)
+	gotTouch, err := restoredTouchscreen.SaveState()
+	check(t, err)
+	if !reflect.DeepEqual(gotTouch, wantTouch) {
+		t.Fatal("touchscreen state did not round-trip beside the keypad")
+	}
+	if err := restoredPrimary.LoadState(state[:len(state)-1]); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("truncated shared state error = %v", err)
+	}
+
+	// A checkpoint made with the touchscreen alone is not this device's
+	// state; only the explicit migration path may accept it.
+	touchOnly, err := NewQualcommPrimaryClockControl(QualcommPrimaryClockConfig{
+		Status: 0x1f, InputMask: 0x1f,
+		WritableOffsets: []uint32{0x0594, 0x05a8, 0x05bc, 0x05d0},
+	})
+	check(t, err)
+	loneTouchscreen, err := NewQualcommTSC2007(testQualcommTSC2007Profile())
+	check(t, err)
+	check(t, touchOnly.AttachTouchscreen(loneTouchscreen))
+	oldState, err := touchOnly.SaveState()
+	check(t, err)
+	if err := restoredPrimary.LoadState(oldState); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("touchscreen-only state error = %v", err)
+	}
+	check(t, restoredPrimary.LoadStateSubset(oldState))
+	if got := restoredPrimary.InputStatus(); got != 0x1f {
+		t.Fatalf("migrated shared input status = %#x", got)
+	}
+	if err := touchOnly.LoadState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("shared state in a touchscreen-only aperture error = %v", err)
+	}
+
+	// An interrupt-driven matrix would claim the touchscreen's group registers.
+	interrupting, err := NewQualcommGPIOKeypad(testInterruptingQualcommGPIOKeypadProfile())
+	check(t, err)
+	if err := touchOnly.AttachGPIOKeypad(interrupting); !errors.Is(err, ErrQualcommPrimaryClockMMIO) {
+		t.Fatalf("interrupting keypad beside touchscreen error = %v", err)
+	}
+}

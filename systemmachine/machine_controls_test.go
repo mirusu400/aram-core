@@ -2,6 +2,7 @@ package systemmachine
 
 import (
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/mirusu400/aram-core/system"
@@ -51,7 +52,7 @@ func TestMachineSetKeyDrivesActiveLowPrimaryClockInput(t *testing.T) {
 func TestMachineSetKeyDrivesActiveLowGPIOInputKey(t *testing.T) {
 	board := system.SPHW4200DC17BoardProfile()
 	controls := boardControls(board)
-	if len(controls) != 1 || controls[0] != "hold" {
+	if !slices.Equal(controls, []string{"volume-up", "volume-down", "end", "back", "send", "hold"}) {
 		t.Fatalf("SPH-W4200 controls = %v", controls)
 	}
 	inputs, err := system.NewQualcommInterruptControllerWithConfig(system.QualcommInterruptControllerConfig{

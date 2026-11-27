@@ -88,6 +88,7 @@ type InterruptLineSink interface {
 type QualcommInterruptController struct {
 	sink              InterruptLineSink
 	gpioWriteObserver QualcommGPIOWriteObserver
+	gpioReadObserver  QualcommGPIOReadObserver
 	gpioInputOffsets  []uint32
 	gpioInputs        map[uint32]uint32
 	gpioLineOffsets   []uint32
@@ -212,6 +213,17 @@ func (d *QualcommInterruptController) AttachGPIOWriteObserver(observer QualcommG
 	return nil
 }
 
+// AttachGPIOReadObserver lets one board device drive bits of the profiled GPIO
+// input words. It sees only those words, after the externally driven lines
+// have been applied.
+func (d *QualcommInterruptController) AttachGPIOReadObserver(observer QualcommGPIOReadObserver) error {
+	if observer == nil || d.gpioReadObserver != nil {
+		return fmt.Errorf("attach Qualcomm GPIO read observer: %w", ErrQualcommInterruptControllerMMIO)
+	}
+	d.gpioReadObserver = observer
+	return nil
+}
+
 // AttachInterruptSink completes board wiring that depends on another MMIO
 // device being constructed after the interrupt controller itself.
 func (d *QualcommInterruptController) AttachInterruptSink(sink InterruptLineSink) error {
@@ -272,6 +284,9 @@ func (d *QualcommInterruptController) Read(offset uint32, width Width) (uint32, 
 	if value, ok := d.gpioInputs[offset]; ok {
 		if mask := d.gpioLineMasks[offset]; mask != 0 {
 			value = value&^mask | d.gpioLineLevels[offset]
+		}
+		if d.gpioReadObserver != nil {
+			value = d.gpioReadObserver.ObserveGPIORead(offset, value)
 		}
 		return value, nil
 	}
