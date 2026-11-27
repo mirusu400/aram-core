@@ -26,6 +26,7 @@ const (
 	KindJava     Kind = "java-archive"
 	KindKTF      Kind = "ktf-wipi"
 	KindRaptor   Kind = "raptor-wipi-c"
+	KindDAF      Kind = "skt-wipi-c"
 	KindGNEX     Kind = "gnex-sgs"
 	KindBREW     Kind = "brew-package"
 	KindWBIN     Kind = "samsung-wbin"

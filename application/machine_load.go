@@ -24,6 +24,7 @@ import (
 	"github.com/mirusu400/aram-core/gnex32"
 	"github.com/mirusu400/aram-core/loader"
 	"github.com/mirusu400/aram-core/loader/brew"
+	"github.com/mirusu400/aram-core/loader/daf"
 	"github.com/mirusu400/aram-core/loader/eads"
 	"github.com/mirusu400/aram-core/loader/gnex"
 	"github.com/mirusu400/aram-core/loader/ktf"
@@ -112,6 +113,13 @@ func (m *Machine) Load(ctx context.Context, source machinecore.Source) error {
 			!strings.HasPrefix(formatErr.Reason, "invalid ZIP:") {
 			return fmt.Errorf("inspect Raptor WIPI-C package: %w", raptorErr)
 		}
+	}
+	dafPackage, dafErr := daf.Inspect(data)
+	if dafErr == nil {
+		return m.loadDAF(ctx, source, dafPackage)
+	}
+	if !errors.Is(dafErr, daf.ErrNotPackage) {
+		return fmt.Errorf("inspect SKT WIPI-C package: %w", dafErr)
 	}
 	container, err := loader.InspectContainer(data)
 	if err != nil || len(container.Images) == 0 {

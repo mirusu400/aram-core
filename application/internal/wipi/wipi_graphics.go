@@ -250,7 +250,21 @@ func (r *Runtime) newFramebuffer(width, height int, owns bool) (uint32, error) {
 		values[5] = 1
 	}
 	var descriptor [wipiFramebufferDescriptorSize]byte
-	for index, value := range values {
+	layout := values[:]
+	if r.IndirectMemoryIDs {
+		// The handle is a memory ID for the descriptor at +8, and the cell at
+		// +4 is the memory ID the descriptor gives for the pixels.
+		layout = []uint32{
+			handle + 8,
+			pixels,
+			uint32(width),
+			uint32(height),
+			uint32(width * bytesPerPixel),
+			uint32(bytesPerPixel * 8),
+			handle + 4,
+		}
+	}
+	for index, value := range layout {
 		binary.LittleEndian.PutUint32(descriptor[index*4:], value)
 	}
 	if err := r.CPU.WriteMemory(handle, descriptor[:]); err != nil {

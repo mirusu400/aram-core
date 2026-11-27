@@ -220,6 +220,10 @@ func (m *Machine) LoadState(input io.Reader) error {
 			return fmt.Errorf("restore KTF client compatibility: %w", err)
 		}
 	}
+	if m.clet != nil {
+		// A Clet leaves the ready state only by running startClet.
+		m.clet.started = parsed.state != machinecore.StateReady
+	}
 	copy(m.frame.Pix, parsed.frame)
 	m.input = parsed.input
 	m.lastResult = parsed.lastResult

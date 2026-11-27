@@ -277,6 +277,13 @@ type Runtime struct {
 	// and after the screen's pixels. Only the allocation grows: the visible
 	// framebuffer and its descriptor dimensions stay the same.
 	ScreenPixelGuardRows int
+	// IndirectMemoryIDs selects the WIPI memory-ID convention in which an ID
+	// is the address of a cell that holds the data pointer, so a title reaches
+	// its memory with one more load (MC_GETDPTR). Allocations, framebuffers
+	// and the framebuffer descriptor's pixel ID all follow it, and the
+	// descriptor takes the standard field order: width, height, bytes per
+	// line, bits per pixel, pixel ID.
+	IndirectMemoryIDs bool
 
 	// DisplayInfoReturnsCount selects LGT Raptor's MC_grpGetDisplayInfo
 	// return value. The Samsung WIPI-C runtime answers M_E_SUCCESS (0) after

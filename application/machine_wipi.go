@@ -174,6 +174,9 @@ func (m *Machine) runWIPISlice(
 		if err == nil && !handled {
 			handled, err = m.wipi.DispatchTrap(ctx, trap)
 		}
+		if err == nil && !handled && m.clet != nil {
+			handled, err = m.clet.dispatchUnboundTrap(m.wipi, trap)
+		}
 		if err != nil {
 			run.Reason = cpu.StopFault
 			run.Err = err
@@ -346,6 +349,20 @@ func (m *Machine) pumpWIPICallbacks(
 					result := m.lastResult
 					m.mu.Unlock()
 					return result, false, err
+				}
+				continue
+			}
+			if m.clet != nil {
+				if event.Kind == shared.EventInputRepeat {
+					// A Clet is told about a key going down and coming up.
+					continue
+				}
+				if callback, ok := m.clet.inputCallback(machinecore.InputEvent{
+					Control: event.Control,
+					Pressed: event.Kind != shared.EventInputRelease,
+					At:      event.At,
+				}); ok {
+					callbacks = append(callbacks, callback)
 				}
 				continue
 			}
@@ -573,7 +590,7 @@ func (m *Machine) invokeWIPICallback(
 		return cpu.Result{Reason: cpu.StopFault, Err: err}, 0, err
 	}
 	instructionLimit := wipirt.CallbackInstructionLimit
-	if m.raptor != nil {
+	if m.raptor != nil || m.clet != nil {
 		instructionLimit = raptorCallbackInstructionLimit
 	}
 	result = m.runWIPISlice(

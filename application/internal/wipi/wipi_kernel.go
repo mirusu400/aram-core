@@ -19,6 +19,10 @@ func (r *Runtime) dispatchKernel(name string) (guest.WIPIReturn, bool, error) {
 	a0, a1, a2 := args[0], args[1], args[2]
 	switch name {
 	case "MC_knlAlloc", "MC_knlCalloc":
+		if r.IndirectMemoryIDs {
+			address, err := r.allocateIndirect(a0, name == "MC_knlCalloc")
+			return guest.WIPIReturn{Low: address}, true, err
+		}
 		address, err := r.Heap.AllocateC(a0, name == "MC_knlCalloc")
 		return guest.WIPIReturn{Low: address}, true, err
 	case "MC_knlFree":
@@ -141,6 +145,14 @@ func (r *Runtime) dispatchKernel(name string) (guest.WIPIReturn, bool, error) {
 		resource := r.Resources[name]
 		if !ok || resource == nil {
 			return guest.WIPIReturn{Low: guest.WIPIReturnCode(guest.WIPINoEntry)}, true, nil
+		}
+		if a1 != 0 && r.IndirectMemoryIDs {
+			// The destination is a memory ID, as MC_knlAlloc returns it.
+			pointer, err := r.ReadU32(a1)
+			if err != nil {
+				return guest.WIPIReturn{}, true, err
+			}
+			a1 = pointer
 		}
 		if a1 == 0 || size < 0 {
 			return guest.WIPIReturn{Low: guest.WIPIReturnCode(guest.WIPIInvalid)}, true, nil
@@ -395,4 +407,24 @@ func modeledKernelAPIs() []string {
 		"MC_knlUnsetTimer", "MC_knlCurrentTime", "MC_knlGetSystemProperty",
 		"MC_knlSetSystemProperty",
 	}
+}
+
+// indirectMemoryHeader is the space an indirect memory ID keeps ahead of its
+// data: the cell holding the data pointer, padded to the heap's alignment.
+const indirectMemoryHeader = uint32(8)
+
+// allocateIndirect serves MC_knlAlloc under the indirect memory-ID
+// convention: the returned ID addresses a cell that holds the data pointer.
+func (r *Runtime) allocateIndirect(size uint32, clearMemory bool) (uint32, error) {
+	if size > ^uint32(0)-indirectMemoryHeader-8 {
+		return 0, nil
+	}
+	id, err := r.Heap.AllocateC(size+indirectMemoryHeader, clearMemory)
+	if err != nil || id == 0 {
+		return 0, err
+	}
+	if err := r.WriteU32(id, id+indirectMemoryHeader); err != nil {
+		return 0, err
+	}
+	return id, nil
 }

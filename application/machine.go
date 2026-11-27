@@ -321,6 +321,7 @@ type Machine struct {
 	minigame               *minigame.Runtime
 	ktf                    *ktfrt.Runtime
 	raptor                 *raptorrt.Runtime
+	clet                   *cletRuntime
 	raptorNet              netauth.Backend
 	offlineCarrierAuth     bool
 	fallbackFont           string
@@ -380,6 +381,7 @@ func (m *Machine) Start(ctx context.Context) error {
 	isMinigame := m.minigame != nil
 	isKTF := m.ktf != nil
 	isRaptor := m.raptor != nil
+	isClet := m.clet != nil
 	m.mu.Unlock()
 	if isMinigame {
 		return m.RenderFirstFrame(ctx)
@@ -389,6 +391,9 @@ func (m *Machine) Start(ctx context.Context) error {
 	}
 	if isRaptor {
 		return m.startRaptor(ctx)
+	}
+	if isClet {
+		return m.startClet(ctx)
 	}
 	return m.runSlice(ctx, false)
 }
@@ -438,12 +443,16 @@ func (m *Machine) Resume() error {
 	m.mu.Lock()
 	isKTF := m.ktf != nil
 	isRaptor := m.raptor != nil
+	isClet := m.clet != nil
 	m.mu.Unlock()
 	if isKTF {
 		return m.runKTFSlice(context.Background(), 0)
 	}
 	if isRaptor {
 		return m.stepRaptorFrame(context.Background())
+	}
+	if isClet {
+		return m.stepCletFrame(context.Background())
 	}
 	return m.runSlice(context.Background(), false)
 }
@@ -635,6 +644,13 @@ func (m *Machine) Reset(ctx context.Context) error {
 		m.state = machinecore.StateFaulted
 		return fmt.Errorf("clear stack: %w", err)
 	}
+	if m.clet != nil {
+		if err := m.cpu.WriteMemory(m.clet.dataBase, m.clet.initialData); err != nil {
+			m.state = machinecore.StateFaulted
+			return fmt.Errorf("restore initial Clet data: %w", err)
+		}
+		m.clet.started = false
+	}
 	if m.wipi != nil {
 		if err := m.wipi.Reset(); err != nil {
 			m.state = machinecore.StateFaulted
@@ -647,6 +663,12 @@ func (m *Machine) Reset(ctx context.Context) error {
 		if err := m.installWIPIResources(); err != nil {
 			m.state = machinecore.StateFaulted
 			return err
+		}
+		if m.clet != nil {
+			if err := m.clet.installImports(m.cpu, m.wipi); err != nil {
+				m.state = machinecore.StateFaulted
+				return err
+			}
 		}
 	}
 	if m.minigame != nil {
@@ -672,6 +694,7 @@ func (m *Machine) StepFrame(ctx context.Context) error {
 	isMinigame := m.minigame != nil
 	isKTF := m.ktf != nil
 	isRaptor := m.raptor != nil
+	isClet := m.clet != nil
 	m.mu.Unlock()
 	if isMinigame {
 		return m.stepMinigameFrame(ctx)
@@ -681,6 +704,9 @@ func (m *Machine) StepFrame(ctx context.Context) error {
 	}
 	if isRaptor {
 		return m.stepRaptorFrame(ctx)
+	}
+	if isClet {
+		return m.stepCletFrame(ctx)
 	}
 	_, stopped, err := m.pumpWIPICallbacks(ctx, guest.WIPIFrameDuration)
 	if err != nil || stopped {
