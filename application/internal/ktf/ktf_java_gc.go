@@ -80,6 +80,14 @@ const ktfGCScanLimit = 1 << 20
 // time rather than a stall on every allocation.
 const ktfGCGrowthBeforeRetry = 65536
 
+// pinJavaConstruction keeps an allocation alive until its constructor can
+// publish it to the guest. Constructors can allocate and collect recursively.
+func (r *Runtime) pinJavaConstruction(address uint32) func() {
+	count := len(r.javaConstructionRoots)
+	r.javaConstructionRoots = append(r.javaConstructionRoots, address)
+	return func() { r.javaConstructionRoots = r.javaConstructionRoots[:count] }
+}
+
 // allocateJavaHeapBytes allocates from the guest heap, collecting once and
 // retrying if the heap is full.
 func (r *Runtime) allocateJavaHeapBytes(size uint32, clear bool) (uint32, error) {

@@ -159,7 +159,7 @@ type Runtime struct {
 	javaHeapExplicitCollected int
 	javaHeapExplicitReady     bool
 	javaImageBytesSinceGC     uint64
-	constructingAnimateImage  uint32
+	javaConstructionRoots     []uint32
 
 	Services      *shared.Services
 	serviceConfig shared.Config

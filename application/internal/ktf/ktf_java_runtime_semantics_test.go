@@ -48,6 +48,70 @@ func TestKTFJavaRuntimeReportsAndCollectsActualHeap(t *testing.T) {
 	}
 }
 
+func TestKTFJavaConstructionSurvivesCollection(t *testing.T) {
+	for _, className := range []string{"org/kwis/msp/lcdui/Image", "[B"} {
+		t.Run(className, func(t *testing.T) {
+			r := newTestRuntime(t)
+			r.JvmContext = allocWords(t, r, 3+128)
+			classAddress, err := r.EnsureJavaClass(className)
+			check(t, err)
+			class, err := r.InspectJavaClass(classAddress)
+			check(t, err)
+			_, err = r.ensureJavaVTableIndex(class.Address, class.VTable)
+			check(t, err)
+
+			// The header fits, then collection has to free space for the fields.
+			garbage := heapAlloc(t, r, 4096, true)
+			heap := r.Heap.Root()
+			headerAddress := heap.Free[0].Address
+			heap.Free = []guest.Block{{Address: headerAddress, Size: 8}}
+			var instance uint32
+			if className == "[B" {
+				instance, err = r.NewJavaArray(className, 48, 1)
+			} else {
+				class.FieldSize = 64
+				instance, err = r.NewJavaInstanceForClass(class)
+			}
+			check(t, err)
+			if heap.Allocations[garbage] == 4096 {
+				t.Fatal("the field allocation did not trigger collection")
+			}
+			fields := readU32(t, r, instance)
+			if instance != headerAddress || fields == instance ||
+				heap.Allocations[instance] != 8 || heap.Allocations[fields] == 0 {
+				t.Fatalf("header %#x and fields %#x are not distinct live allocations", instance, fields)
+			}
+			if got := readU32(t, r, instance+4); got != classAddress {
+				t.Fatalf("object class = %#x, want %#x", got, classAddress)
+			}
+			if len(r.javaConstructionRoots) != 0 {
+				t.Fatal("constructor retained its temporary roots")
+			}
+		})
+	}
+}
+
+func TestKTFJavaStringSurvivesCollectionWhileAllocatingCharacters(t *testing.T) {
+	r := newTestRuntime(t)
+	r.JvmContext = allocWords(t, r, 3+128)
+	instance, err := r.newJavaInstance("java/lang/String", 0)
+	check(t, err)
+	_, err = r.NewJavaArray("[C", 0, 2)
+	check(t, err)
+	garbage := heapAlloc(t, r, 4096, true)
+	heap := r.Heap.Root()
+	heap.Free = []guest.Block{{Address: heap.Free[0].Address, Size: 8}}
+
+	const value = "score: 1234"
+	check(t, r.materializeJavaString(instance, value))
+	if heap.Allocations[garbage] == 4096 {
+		t.Fatal("allocating the backing char array did not trigger collection")
+	}
+	if heap.Allocations[instance] != 8 || r.javaStringValue(instance) != value {
+		t.Fatal("collection lost the String being constructed")
+	}
+}
+
 func TestKTFJavaRuntimeExitTerminatesAllTasks(t *testing.T) {
 	runtime := newTestRuntime(t)
 	runtime.Tasks = []*Task{{}, {}}

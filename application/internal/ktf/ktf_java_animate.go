@@ -285,8 +285,7 @@ func (r *Runtime) newKTFAnimateImage(
 	}
 	r.animateImages[instance] = animated
 	// A frame can trigger collection before the guest has received the image.
-	r.constructingAnimateImage = instance
-	defer func() { r.constructingAnimateImage = 0 }()
+	defer r.pinJavaConstruction(instance)()
 	for index := range animated.frames {
 		frame, err := createFrame(index)
 		if err != nil {

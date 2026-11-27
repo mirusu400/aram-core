@@ -118,6 +118,7 @@ func (r *Runtime) NewJavaInstanceForClass(class JavaClass) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer r.pinJavaConstruction(instance)()
 	reservedOwners, err := r.instanceReservedFieldOwners(class)
 	if err != nil {
 		return 0, err
@@ -133,6 +134,7 @@ func (r *Runtime) NewJavaInstanceForClass(class JavaClass) (uint32, error) {
 	if fields == 0 {
 		return 0, errors.New("KTF guest heap exhausted allocating Java object fields")
 	}
+	defer r.pinJavaConstruction(fields)()
 	header, err := r.javaObjectClassHeader(class, vtableIndex)
 	if err != nil {
 		return 0, err
@@ -237,6 +239,7 @@ func (r *Runtime) NewJavaString(value string) (uint32, error) {
 // fields directly, so a map-only string turns into NUL characters the moment
 // the guest copies it (issue #44).
 func (r *Runtime) materializeJavaString(instance uint32, value string) error {
+	defer r.pinJavaConstruction(instance)()
 	codeUnits := utf16.Encode([]rune(value))
 	characters, err := r.NewJavaArray(
 		"[C",
@@ -332,6 +335,7 @@ func (r *Runtime) NewJavaArray(
 	if err != nil {
 		return 0, err
 	}
+	defer r.pinJavaConstruction(instance)()
 	fields, err := r.allocateJavaHeapBytes(count*elementSize+8, true)
 	if err != nil {
 		return 0, err
@@ -339,6 +343,7 @@ func (r *Runtime) NewJavaArray(
 	if fields == 0 {
 		return 0, errors.New("KTF guest heap exhausted allocating Java array")
 	}
+	defer r.pinJavaConstruction(fields)()
 	header, err := r.javaObjectClassHeader(class, vtableIndex)
 	if err != nil {
 		return 0, err
