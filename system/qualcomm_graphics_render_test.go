@@ -319,3 +319,53 @@ func TestQualcommGraphicsDSPSamplesStripOrderedTexturesWithIndices(t *testing.T)
 		t.Fatalf("draw with an out-of-range index wrote %#04x", h.pixel(2, 2))
 	}
 }
+
+func TestQualcommGraphicsDSPStencilClearMarkersAndLineDraws(t *testing.T) {
+	h := newGraphicsDSPHarness(t)
+	h.startGraphics()
+	// The stencil is cleared to record 13's bit; a draw that requires
+	// stencil == 1 then passes or fails as a whole.
+	for id, bit := range []uint16{1, 0} {
+		scene, enables := grpTestScene(uint32(id*2 + 1))
+		scene.put16(enables, 22, 0)      // no depth test
+		scene.put16(enables, 28, 0xffff) // stencil test
+		stencil := scene.record(grpOpStencil)
+		scene.put16(stencil, 2, 4) // EQUAL
+		scene.put16(stencil, 4, 1)
+		scene.put16(stencil, 6, 1)
+		scene.put16(stencil, 8, 1)
+		scene.put16(stencil, 10, 1)
+		scene.put16(stencil, 12, 1)
+		scene.put16(stencil, 14, 1)
+		// grpTestScene ends with the clear-values record.
+		scene.put16(len(scene.data)-int(qualcommGraphicsRecordSize[grpOpStencil])-int(qualcommGraphicsRecordSize[grpOpClearValues]), 4, bit)
+		scene.marker(grpMarkerClearStencil)
+		h.submit(0x00020000, scene.bytes())
+		for y := 0; y < grpTestSide; y++ {
+			h.load(grpTestColorAddress+uint32(y*grpTestSide*2), make([]byte, grpTestSide*2))
+		}
+		quad := newGRPArray(uint32(id*2 + 2))
+		quad.draw(h, 7, [][3]float64{{-1, -1, 0}, {1, -1, 0}, {-1, 1, 0}, {1, 1, 0}})
+		h.submit(0x00020000, quad.bytes())
+		want := uint16(0)
+		if bit == 1 {
+			want = 0xffff
+		}
+		if got := h.pixel(5, 5); got != want {
+			t.Fatalf("stencil cleared to %d: pixel %#04x, want %#04x", bit, got, want)
+		}
+	}
+
+	// A line primitive (code 4) through the middle row reaches guest memory.
+	scene, enables := grpTestScene(9)
+	scene.put16(enables, 22, 0)
+	scene.draw(h, 4, [][3]float64{{-1, 0.0625, 0}, {1, 0.0625, 0}})
+	for y := 0; y < grpTestSide; y++ {
+		h.load(grpTestColorAddress+uint32(y*grpTestSide*2), make([]byte, grpTestSide*2))
+	}
+	h.submit(0x00020000, scene.bytes())
+	if h.pixel(0, 7) != 0xffff || h.pixel(15, 7) != 0xffff || h.pixel(8, 6) != 0 || h.pixel(8, 8) != 0 {
+		t.Fatalf("line row = %#04x %#04x, neighbours %#04x %#04x",
+			h.pixel(0, 7), h.pixel(15, 7), h.pixel(8, 6), h.pixel(8, 8))
+	}
+}

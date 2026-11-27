@@ -161,6 +161,65 @@ type grpFragmentState struct {
 	polygonOffsetUnits      float64
 	polygonOffsetFactor     float64
 	polygonOffsetFillEnable bool
+	// logicOp replaces blending with a bitwise operation on the stored
+	// RGB565 word; logicCode is the operation's truth table, bit
+	// (source<<1 | destination).
+	logicOp   bool
+	logicCode uint8
+	// The stencil buffer is one bit deep.
+	stencil          bool
+	stencilFunc      uint8
+	stencilRef       uint8
+	stencilMask      uint8
+	stencilWriteMask uint8
+	stencilFail      uint8
+	stencilDepthFail uint8
+	stencilPass      uint8
+}
+
+const (
+	grpStencilZero = iota
+	grpStencilKeep
+	grpStencilReplace
+	grpStencilIncrement
+	grpStencilDecrement
+	grpStencilInvert
+)
+
+// grpStencilUpdate applies one stencil operation to a one-bit value.
+func grpStencilUpdate(operation, stored, reference, writeMask uint8) uint8 {
+	value := stored
+	switch operation {
+	case grpStencilZero:
+		value = 0
+	case grpStencilReplace:
+		value = reference
+	case grpStencilIncrement:
+		value = 1
+	case grpStencilDecrement:
+		value = 0
+	case grpStencilInvert:
+		value = stored ^ 1
+	}
+	return (stored&^writeMask | value&writeMask) & 1
+}
+
+// grpLogic applies a logic-op truth table to two 16-bit pixels.
+func grpLogic(code uint8, source, destination uint16) uint16 {
+	var out uint16
+	if code&1 != 0 {
+		out |= ^source & ^destination
+	}
+	if code&2 != 0 {
+		out |= ^source & destination
+	}
+	if code&4 != 0 {
+		out |= source & ^destination
+	}
+	if code&8 != 0 {
+		out |= source & destination
+	}
+	return out
 }
 
 // grpSurface is the render target: RGB565 colour and a 16-bit depth buffer,
@@ -169,6 +228,8 @@ type grpSurface struct {
 	width, height int
 	color         []uint16
 	depth         []uint16
+	// stencil is nil unless the batch uses the stencil test.
+	stencil []uint8
 }
 
 func grpCompare(function uint8, incoming, stored float64) bool {
@@ -377,7 +438,9 @@ func (s *grpSurface) triangle(state *grpFragmentState, v0, v1, v2 *grpVertex) {
 				z = 65535
 			}
 			index := row + x
-			if state.depthTest && !grpCompare(state.depthFunc, float64(uint16(z)), float64(s.depth[index])) {
+			depthPass := !state.depthTest || grpCompare(state.depthFunc, float64(uint16(z)), float64(s.depth[index]))
+			stencilled := state.stencil && s.stencil != nil
+			if !depthPass && !stencilled {
 				continue
 			}
 			// Perspective-correct weights.
@@ -420,8 +483,35 @@ func (s *grpSurface) triangle(state *grpFragmentState, v0, v1, v2 *grpVertex) {
 			if state.alphaTest && !grpCompare(state.alphaFunc, fragment[3], state.alphaRef) {
 				continue
 			}
+			if stencilled {
+				held := s.stencil[index] & 1
+				if !grpCompare(state.stencilFunc, float64(state.stencilRef&state.stencilMask), float64(held&state.stencilMask)) {
+					s.stencil[index] = grpStencilUpdate(state.stencilFail, held, state.stencilRef, state.stencilWriteMask)
+					continue
+				}
+				if !depthPass {
+					s.stencil[index] = grpStencilUpdate(state.stencilDepthFail, held, state.stencilRef, state.stencilWriteMask)
+					continue
+				}
+				s.stencil[index] = grpStencilUpdate(state.stencilPass, held, state.stencilRef, state.stencilWriteMask)
+			}
 			if state.depthTest && state.depthWrite {
 				s.depth[index] = uint16(z)
+			}
+			if state.logicOp {
+				result := grpLogic(state.logicCode, grpPack565(fragment), s.color[index])
+				var mask uint16
+				if state.colorMask[0] {
+					mask |= 0xf800
+				}
+				if state.colorMask[1] {
+					mask |= 0x07e0
+				}
+				if state.colorMask[2] {
+					mask |= 0x001f
+				}
+				s.color[index] = s.color[index]&^mask | result&mask
+				continue
 			}
 			stored := grpUnpack565(s.color[index])
 			if state.blend {

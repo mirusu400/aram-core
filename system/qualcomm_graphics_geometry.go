@@ -425,9 +425,89 @@ const (
 	grpPrimitiveTriangleFan
 )
 
-// drawPrimitives assembles triangles from an already shaded vertex list.
-// Points and lines are not produced by the titles this module was written
-// against and are ignored.
+// grpClipSegment clips a line segment against the six clip-space planes.
+func grpClipSegment(a, b grpClipVertex) (grpClipVertex, grpClipVertex, bool) {
+	low, high := 0.0, 1.0
+	for plane := 0; plane < 6; plane++ {
+		axis, sign := plane/2, 1.0
+		if plane&1 != 0 {
+			sign = -1
+		}
+		da := a.clip[3] + grpMul(sign, a.clip[axis])
+		db := b.clip[3] + grpMul(sign, b.clip[axis])
+		switch {
+		case da < 0 && db < 0:
+			return a, b, false
+		case da < 0:
+			if t := da / (da - db); t > low {
+				low = t
+			}
+		case db < 0:
+			if t := da / (da - db); t < high {
+				high = t
+			}
+		}
+	}
+	if low > high {
+		return a, b, false
+	}
+	return grpLerpClip(&a, &b, low), grpLerpClip(&a, &b, high), true
+}
+
+// drawLine rasterises a one-pixel-wide line as a quad around the segment.
+func (g *grpGeometryState) drawLine(surface *grpSurface, fragment *grpFragmentState, a, b *grpClipVertex) {
+	first, second, visible := grpClipSegment(*a, *b)
+	if !visible {
+		return
+	}
+	start, end := g.toWindow(&first), g.toWindow(&second)
+	dx, dy := end.x-start.x, end.y-start.y
+	length := math.Sqrt(grpMul(dx, dx) + grpMul(dy, dy))
+	if length == 0 {
+		g.drawPoint(surface, fragment, &first)
+		return
+	}
+	// Half a pixel to each side, and half a pixel past each end so the end
+	// pixels are covered.
+	nx, ny := -dy/length/2, dx/length/2
+	ex, ey := dx/length/2, dy/length/2
+	corner := func(v grpVertex, sx, sy float64) grpVertex {
+		v.x += sx
+		v.y += sy
+		return v
+	}
+	q0, q1 := corner(start, nx-ex, ny-ey), corner(start, -nx-ex, -ny-ey)
+	q2, q3 := corner(end, nx+ex, ny+ey), corner(end, -nx+ex, -ny+ey)
+	surface.triangle(fragment, &q0, &q1, &q2)
+	surface.triangle(fragment, &q1, &q3, &q2)
+}
+
+// drawPoint rasterises a point as the pixel that contains it.
+func (g *grpGeometryState) drawPoint(surface *grpSurface, fragment *grpFragmentState, v *grpClipVertex) {
+	for axis := 0; axis < 3; axis++ {
+		if v.clip[axis] < -v.clip[3] || v.clip[axis] > v.clip[3] {
+			return
+		}
+	}
+	if v.clip[3] <= 0 {
+		return
+	}
+	centre := g.toWindow(v)
+	left, top := float64(grpFloor(centre.x)), float64(grpFloor(centre.y))
+	corner := func(x, y float64) grpVertex {
+		out := centre
+		out.x, out.y = x, y
+		return out
+	}
+	q0, q1 := corner(left, top), corner(left+1, top)
+	q2, q3 := corner(left, top+1), corner(left+1, top+1)
+	surface.triangle(fragment, &q0, &q1, &q2)
+	surface.triangle(fragment, &q1, &q3, &q2)
+}
+
+// drawPrimitives assembles primitives from an already shaded vertex list.
+// Points are one pixel and lines one pixel wide; the module is sent no point
+// size or line width.
 func (g *grpGeometryState) drawPrimitives(
 	surface *grpSurface,
 	fragment *grpFragmentState,
@@ -435,6 +515,21 @@ func (g *grpGeometryState) drawPrimitives(
 	vertices []grpClipVertex,
 ) {
 	switch mode {
+	case grpPrimitivePoints:
+		for index := range vertices {
+			g.drawPoint(surface, fragment, &vertices[index])
+		}
+	case grpPrimitiveLines:
+		for index := 0; index+1 < len(vertices); index += 2 {
+			g.drawLine(surface, fragment, &vertices[index], &vertices[index+1])
+		}
+	case grpPrimitiveLineStrip, grpPrimitiveLineLoop:
+		for index := 0; index+1 < len(vertices); index++ {
+			g.drawLine(surface, fragment, &vertices[index], &vertices[index+1])
+		}
+		if mode == grpPrimitiveLineLoop && len(vertices) > 2 {
+			g.drawLine(surface, fragment, &vertices[len(vertices)-1], &vertices[0])
+		}
 	case grpPrimitiveTriangles:
 		for index := 0; index+2 < len(vertices); index += 3 {
 			g.drawTriangle(surface, fragment, &vertices[index], &vertices[index+1], &vertices[index+2])

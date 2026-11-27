@@ -20,8 +20,10 @@ const (
 	qualcommGraphicsRegisterFileSize = 0x1000
 	qualcommGraphicsDepthBase        = qualcommGraphicsRegisterFileSize
 	qualcommGraphicsMaximumSide      = 512
-	qualcommGraphicsDSPPrivateSize   = qualcommGraphicsDepthBase +
+	qualcommGraphicsStencilBase      = qualcommGraphicsDepthBase +
 		qualcommGraphicsMaximumSide*qualcommGraphicsMaximumSide*2
+	qualcommGraphicsDSPPrivateSize = qualcommGraphicsStencilBase +
+		qualcommGraphicsMaximumSide*qualcommGraphicsMaximumSide
 )
 
 // State record opcodes.
@@ -83,6 +85,7 @@ var qualcommGraphicsRecordSize = [qualcommGraphicsRegisterSlots]uint8{
 type qualcommGraphicsScratch struct {
 	color    []uint16
 	depth    []uint16
+	stencil  []uint8
 	row      []byte
 	textures [4]grpCachedTexture
 	next     int
@@ -247,6 +250,8 @@ type grpTarget struct {
 	// dirty and depthDirty record which buffers a draw may have written.
 	dirty      bool
 	depthDirty bool
+	// stencilled is set before open when the batch needs the stencil rows.
+	stencilled bool
 }
 
 func (s *qualcommGraphicsState) target() (grpTarget, bool) {
@@ -333,7 +338,18 @@ func (t *grpTarget) open(
 			depth[index] = binary.LittleEndian.Uint16(raw[index*2:])
 		}
 	}
+	if t.stencilled {
+		if cap(scratch.stencil) < pixels {
+			scratch.stencil = make([]uint8, pixels)
+		}
+		surface.stencil = scratch.stencil[:pixels]
+		dsp.memory.ReadMemory(t.stencilAddress(dsp, private, row0), surface.stencil[row0*surface.width:row1*surface.width])
+	}
 	t.loaded = true
+}
+
+func (t *grpTarget) stencilAddress(dsp qualcommGraphicsDSPMemory, private uint32, row int) uint32 {
+	return dsp.base + private + qualcommGraphicsStencilBase + uint32(row*t.surface.width)
 }
 
 func (t *grpTarget) depthAddress(dsp qualcommGraphicsDSPMemory, private uint32, row int) uint32 {
@@ -363,6 +379,12 @@ func (t *grpTarget) close(dsp qualcommGraphicsDSPMemory, scratch *qualcommGraphi
 			binary.LittleEndian.PutUint16(raw[index*2:], depth)
 		}
 		dsp.memory.WriteMemory(t.depthAddress(dsp, private, t.row0), raw)
+	}
+	if t.stencilled && surface.stencil != nil {
+		dsp.memory.WriteMemory(
+			t.stencilAddress(dsp, private, t.row0),
+			surface.stencil[t.row0*surface.width:t.row1*surface.width],
+		)
 	}
 }
 
@@ -411,6 +433,10 @@ func (s *qualcommGraphicsState) execute(dsp qualcommGraphicsDSPMemory, private u
 			s.clearDepth(dsp, private, &target, [4]int{0, 0, target.surface.width, target.surface.height})
 		case grpMarkerClearDepthScissored:
 			s.clearDepth(dsp, private, &target, s.scissor(target.surface.width, target.surface.height))
+		case grpMarkerClearStencil:
+			s.clearStencil(dsp, private, &target, [4]int{0, 0, target.surface.width, target.surface.height})
+		case grpMarkerClearStencilScissored:
+			s.clearStencil(dsp, private, &target, s.scissor(target.surface.width, target.surface.height))
 		}
 		target.close(dsp, s.scratch, private)
 	}
@@ -458,6 +484,34 @@ func (s *qualcommGraphicsState) clearDepth(
 		}
 	}
 	dsp.memory.WriteMemory(address, raw)
+}
+
+func (s *qualcommGraphicsState) clearStencil(
+	dsp qualcommGraphicsDSPMemory,
+	private uint32,
+	target *grpTarget,
+	rectangle [4]int,
+) {
+	if rectangle[0] >= rectangle[2] || rectangle[1] >= rectangle[3] {
+		return
+	}
+	target.close(dsp, s.scratch, private)
+	target.loaded, target.dirty, target.depthDirty = false, false, false
+	width := target.surface.width
+	row := s.scratch.block(width)
+	value := uint8(s.u16(grpOpClearValues, 4) & 1)
+	for y := rectangle[1]; y < rectangle[3]; y++ {
+		address := target.stencilAddress(dsp, private, y)
+		if rectangle[0] != 0 || rectangle[2] != width {
+			if !dsp.memory.ReadMemory(address, row) {
+				return
+			}
+		}
+		for x := rectangle[0]; x < rectangle[2]; x++ {
+			row[x] = value
+		}
+		dsp.memory.WriteMemory(address, row)
+	}
 }
 
 func (s *qualcommGraphicsState) geometry() *grpGeometryState {
@@ -571,6 +625,22 @@ func (s *qualcommGraphicsState) fragment(dsp qualcommGraphicsDSPMemory, target *
 		flat:       enabled(6),
 		fog:        enabled(14),
 		fogColor:   grpColor16(s.registers[grpOpFog][4:]),
+	}
+	if enabled(24) {
+		// The ARM turns blending off while a logic op is selected.
+		fragment.logicOp = true
+		fragment.logicCode = uint8(s.u16(grpOpFragment, 16) & 15)
+		fragment.blend = false
+	}
+	if enabled(28) {
+		fragment.stencil = true
+		fragment.stencilFunc = grpCompareCode(s.u16(grpOpStencil, 2))
+		fragment.stencilRef = uint8(s.u16(grpOpStencil, 4) & 1)
+		fragment.stencilMask = uint8(s.u16(grpOpStencil, 6) & 1)
+		fragment.stencilWriteMask = uint8(s.u16(grpOpStencil, 8) & 1)
+		fragment.stencilFail = uint8(s.u16(grpOpStencil, 10))
+		fragment.stencilDepthFail = uint8(s.u16(grpOpStencil, 12))
+		fragment.stencilPass = uint8(s.u16(grpOpStencil, 14))
 	}
 	if s.u16(grpOpMasks, 6)&1 != 0 {
 		fragment.polygonOffsetFillEnable = true
@@ -736,8 +806,16 @@ func (s *qualcommGraphicsState) draw(
 		mode = grpPrimitiveTriangleStrip
 	case 6:
 		mode = grpPrimitiveTriangleFan
+	case 1:
+		mode = grpPrimitivePoints
+	case 4:
+		mode = grpPrimitiveLines
+	case 3:
+		mode = grpPrimitiveLineLoop
+	case 2:
+		mode = grpPrimitiveLineStrip
 	default:
-		return // points and lines
+		return
 	}
 	vertexCount := int(binary.LittleEndian.Uint16(array[6:]))
 	positions := s.attribute(dsp, array, 0)
@@ -869,16 +947,18 @@ func (s *qualcommGraphicsState) draw(
 	}
 	// Load only the rows the batch can reach.
 	if low, high, bounded := geometry.windowRows(shaded); bounded {
-		if low > fragment.scissor[1] {
-			fragment.scissor[1] = low
+		// A line or point reaches half a pixel past its vertices.
+		if low-1 > fragment.scissor[1] {
+			fragment.scissor[1] = low - 1
 		}
-		if high < fragment.scissor[3] {
-			fragment.scissor[3] = high
+		if high+1 < fragment.scissor[3] {
+			fragment.scissor[3] = high + 1
 		}
 	}
 	if fragment.scissor[1] >= fragment.scissor[3] {
 		return
 	}
+	target.stencilled = fragment.stencil
 	target.open(dsp, s.scratch, private, fragment.scissor[1], fragment.scissor[3])
 	if fragment.scissor[1] < target.row0 {
 		fragment.scissor[1] = target.row0
