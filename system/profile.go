@@ -599,6 +599,10 @@ type BoardProfile struct {
 	AddressedStorageWindows                   []AddressedStorageWindowProfile
 	SamsungMGP                                *SamsungMGPProfile
 	ADSPMailbox                               *QualcommADSPMailboxProfile
+	// BootControlCPUHaltOffset is the boot-control register through which
+	// firmware stops the processor clock until the next interrupt. Zero means
+	// the board does not model the gate and the write is an ordinary latch.
+	BootControlCPUHaltOffset uint32
 	// CoherentInstructionCache marks firmware that never depends on stale
 	// instruction-cache lines, so the CPU need not model them.
 	CoherentInstructionCache bool
@@ -3560,6 +3564,30 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 	profile.BootControlGPIOInputKeys = []QualcommGPIOInputKeyProfile{
 		{ID: "hold", Offset: 0x3c, Bit: 30, ActiveLow: true},
 	}
+	// The same task reads bit 10 of the GPIO input word at +0x0444 of the
+	// secondary clock aperture as "no earjack". The inherited zero made it
+	// see a headset whose remote key (word CHIP_BASE+0x0934, bit 28, active
+	// low) was held down: it rescanned every few milliseconds and never cast
+	// its sleep vote, so the idle task spun instead of halting. A handset
+	// with nothing plugged in reads the bit set.
+	for index := range profile.SecondaryClockReadOnlyRegisters {
+		if profile.SecondaryClockReadOnlyRegisters[index].Offset == 0x0444 {
+			profile.SecondaryClockReadOnlyRegisters[index].Value = 0x00000400
+		}
+	}
+	// With no headset the task goes on to scan the side-key matrix: five
+	// sense lines in the primary clock aperture's input word and a sixth on
+	// bit 5 of GPIO input word CHIP_BASE+0x0940. They are active low, so an
+	// untouched matrix reads the bit set.
+	profile.BootControlGPIOInputs = append(
+		profile.BootControlGPIOInputs,
+		QualcommGPIOInputRegister{Offset: 0x40, Value: 0x00000020},
+	)
+	// Once every task has cast its sleep vote, DC17's sleep task stops the
+	// ARM clock by storing 1 to CHIP_BASE+0x0204 and expects to continue only
+	// after an interrupt. Without the gate that store returned at once and
+	// the idle handset burned its whole time budget re-entering the routine.
+	profile.BootControlCPUHaltOffset = 0x0204
 	// AMSS samples the PBL-retained word at 0xfffff3a8 during its reset-vector
 	// hardware pass. A cold handset starts with no retained request asserted;
 	// keep the word writable because the same top-page slot is boot scratch RAM.

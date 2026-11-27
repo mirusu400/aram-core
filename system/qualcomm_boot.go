@@ -95,6 +95,10 @@ type QualcommBootControlConfig struct {
 	InterruptController            *QualcommInterruptController
 	VectoredInterruptController    *QualcommVectoredInterruptController
 	TimeTickClock                  *QualcommTimeTickClockConfig
+	// CPUHalt and CPUHaltOffset connect the processor-clock gate register:
+	// storing a value with bit 0 set stops the CPU clock until an interrupt.
+	CPUHalt       *CPUHaltLine
+	CPUHaltOffset uint32
 }
 
 // QualcommSDCCControllerConfig models one PL180-style removable-card
@@ -956,6 +960,8 @@ func validateQualcommSecondaryClockConfig(config QualcommSecondaryClockConfig) e
 // Registers with understood side effects are modeled separately; every
 // unknown access fails.
 type QualcommBootControl struct {
+	cpuHalt                        *CPUHaltLine
+	cpuHaltOffset                  uint32
 	hardwareRevision               uint32
 	nandInterfaceMode              uint32
 	ebiMemoryConfiguration         uint32
@@ -1160,6 +1166,8 @@ func NewQualcommBootControl(config QualcommBootControlConfig) (*QualcommBootCont
 		return groupedStatusResponses[left].GroupMask < groupedStatusResponses[right].GroupMask
 	})
 	device := &QualcommBootControl{
+		cpuHalt:                     config.CPUHalt,
+		cpuHaltOffset:               config.CPUHaltOffset,
 		hardwareRevision:            config.HardwareRevision,
 		nandInterfaceMode:           config.NANDInterfaceMode,
 		ebiMemoryConfiguration:      config.EBIMemoryConfiguration,
@@ -1528,6 +1536,9 @@ func (d *QualcommBootControl) Read(offset uint32, width Width) (uint32, error) {
 }
 
 func (d *QualcommBootControl) Write(offset uint32, width Width, value uint32) error {
+	if d.cpuHalt != nil && offset == d.cpuHaltOffset && value&1 != 0 {
+		d.cpuHalt.Request()
+	}
 	_, interruptWindowOverride := d.interruptWindowWritableOffsets[offset]
 	if isQualcommBootControlInterruptWindowOffset(offset) && !interruptWindowOverride {
 		return d.interruptController.Write(offset-0x0900, width, value)

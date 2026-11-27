@@ -724,9 +724,15 @@ func newSamsungQualcommMachine(
 	if !ok {
 		return fail(fmt.Errorf("%w: %s has no interrupt-line sink", ErrUnsupportedBackend, backend.Identity().Name))
 	}
+	var cpuHalt *system.CPUHaltLine
+	var vectoredSink system.InterruptLineSink = interruptSink
+	if board.BootControlCPUHaltOffset != 0 {
+		cpuHalt = system.NewCPUHaltLine(interruptSink, backend.Stop)
+		vectoredSink = cpuHalt
+	}
 	vectoredInterrupts, err := system.NewQualcommVectoredInterruptController(
 		*board.VectoredInterrupt,
-		interruptSink,
+		vectoredSink,
 	)
 	if err != nil {
 		return fail(fmt.Errorf("create %s vectored interrupt controller: %w", firmwareProfile.Model, err))
@@ -862,6 +868,8 @@ func newSamsungQualcommMachine(
 		HardwareRevision: 0x10000000, NANDInterfaceMode: 2,
 		EBIMemoryConfiguration: 0x5880, ClockModeStatus: board.BootClockModeStatus,
 		WritableOffsets:                board.BootControlWritableOffsets,
+		CPUHalt:                        cpuHalt,
+		CPUHaltOffset:                  board.BootControlCPUHaltOffset,
 		InterruptWindowWritableOffsets: board.BootControlInterruptWindowWritableOffsets,
 		HalfwordOffsets:                board.BootControlHalfwordOffsets,
 		MixedWidthOffsets:              board.BootControlMixedWidthOffsets,
@@ -1236,6 +1244,9 @@ func newSamsungQualcommMachine(
 	)
 	if err != nil {
 		return fail(err)
+	}
+	if cpuHalt != nil {
+		runner.SetCPUHalt(cpuHalt)
 	}
 	machine := &Machine{
 		identity: Identity{
@@ -4555,6 +4566,7 @@ func (m *Machine) powerCycleLocked() error {
 	if m.dspAudio != nil {
 		m.dspAudio.Restart(0)
 	}
+	m.runner.RestartCPUClock()
 	if err := m.backend.RestoreContext(m.resetCPUState); err != nil {
 		return fmt.Errorf("restore reset CPU state: %w", err)
 	}
@@ -4859,6 +4871,7 @@ func (m *Machine) LoadSnapshot(snapshot Snapshot) error {
 	if m.dspAudio != nil {
 		m.dspAudio.Restart(snapshot.Instructions)
 	}
+	m.runner.RestartCPUClock()
 	m.bootBoundaryLeft = 0
 	if snapshot.Instructions < m.bootBoundary.instructions {
 		m.bootBoundaryLeft = m.bootBoundary.instructions - snapshot.Instructions
