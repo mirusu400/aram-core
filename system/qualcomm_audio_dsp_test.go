@@ -227,7 +227,8 @@ func TestQualcommAudioDSPResamplesPCMAndAppliesControls(t *testing.T) {
 	}
 	h.command(qualcommAudioCommandControl, 1, qualcommAudioControlResume)
 	check(t, h.audio.Advance(1))
-	if chunk := h.audio.DrainAudio(); !equalPCM(chunk.PCM16, []int16{-2000, -2000}) || chunk.StartSample != 16 {
+	h.audio.SetOutputChannels(1)
+	if chunk := h.audio.DrainAudio(); !equalPCM(chunk.PCM16, []int16{-2000}) || chunk.Channels != 1 || chunk.StartSample != 16 {
 		t.Fatalf("resumed frame = %v at %d", chunk.PCM16, chunk.StartSample)
 	}
 	h.lend(1, 0x5000, raw, 2)

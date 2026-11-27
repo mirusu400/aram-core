@@ -1196,6 +1196,7 @@ func newSamsungQualcommMachine(
 		clockedDevices = append(clockedDevices, audio)
 	}
 	if dspAudio != nil {
+		dspAudio.SetOutputChannels(options.OutputChannels)
 		clockedDevices = append(clockedDevices, dspAudio)
 	}
 	var executionRunner system.ExecutionRunner = backend

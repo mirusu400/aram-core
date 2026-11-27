@@ -219,6 +219,7 @@ type QualcommAudioDSP struct {
 	generation     uint64
 	announce       bool
 
+	mono        bool
 	queued      []int16
 	queuedStart uint64
 	mix         []int32
@@ -618,8 +619,27 @@ func (d *QualcommAudioDSP) publish(mix []int32, start uint64) {
 	}
 }
 
+// SetOutputChannels selects a mono or stereo host stream; the mix itself is
+// always stereo.
+func (d *QualcommAudioDSP) SetOutputChannels(channels uint8) {
+	d.mono = channels == 1
+}
+
 // DrainAudio hands the host the PCM mixed since the last call.
 func (d *QualcommAudioDSP) DrainAudio() core.AudioChunk {
+	chunk := d.drain()
+	if !d.mono || chunk.Channels != qualcommAudioOutputChannels {
+		return chunk
+	}
+	chunk.Channels = 1
+	for frame := 0; frame < len(chunk.PCM16)/2; frame++ {
+		chunk.PCM16[frame] = int16((int32(chunk.PCM16[frame*2]) + int32(chunk.PCM16[frame*2+1])) / 2)
+	}
+	chunk.PCM16 = chunk.PCM16[:len(chunk.PCM16)/2]
+	return chunk
+}
+
+func (d *QualcommAudioDSP) drain() core.AudioChunk {
 	rate := uint64(d.profile.OutputSampleRate)
 	nanoseconds := func(instructions uint64) int64 {
 		whole := instructions / d.profile.InstructionsPerSecond
