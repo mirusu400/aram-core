@@ -933,7 +933,24 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 			profile.BootControlSDCCControllers,
 		)
 	}
-	if profile.Keypad != nil || profile.Touchscreen == nil ||
+	// The polled side-key matrix shares the GPIO aperture with the pen input:
+	// two drive lines, five primary-clock sense lines and one sense line in a
+	// boot-control GPIO input word, and no GPIO interrupt group of its own.
+	if !reflect.DeepEqual(profile.Keypad, &QualcommGPIOKeypadProfile{
+		Columns:          []uint8{0, 1, 2, 3, 4},
+		AuxiliaryColumns: []QualcommGPIOKeypadAuxiliaryColumnProfile{{Offset: 0x40, Bit: 5}},
+		Rows: []QualcommGPIOKeypadRowProfile{
+			{OutputBank: QualcommGPIOOutputSecondaryClock, OutputOffset: 0x0400, OutputMask: 0x00000400},
+			{OutputBank: QualcommGPIOOutputSecondaryClock, OutputOffset: 0x0400, OutputMask: 0x00000800},
+		},
+		Keys: []QualcommGPIOKeyProfile{
+			{ID: "volume-up", Row: 0, Column: 0},
+			{ID: "volume-down", Row: 0, Column: 1},
+			{ID: "end", Row: 0, Column: 2},
+			{ID: "back", Row: 0, Column: 3},
+			{ID: "send", Row: 0, Column: 5},
+		},
+	}) || profile.Touchscreen == nil ||
 		profile.Touchscreen.Width != 240 || profile.Touchscreen.Height != 432 ||
 		profile.Touchscreen.PenInputOffset != 0x0440 || profile.Touchscreen.PenInputMask != 1 ||
 		profile.Touchscreen.InterruptGroup.StatusOffset != 0x05e4 ||

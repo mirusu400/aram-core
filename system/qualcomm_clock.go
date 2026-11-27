@@ -190,9 +190,13 @@ func (d *QualcommPrimaryClockControl) InputStatus() uint32 {
 }
 
 // AttachGPIOKeypad connects a profile-created matrix to this input bank. The
-// keypad columns must all be exposed by the board's input mask.
+// keypad columns must all be exposed by the board's input mask. A polled
+// matrix, which owns no GPIO interrupt group, may share the aperture with a
+// touchscreen; one with interrupt groups may not, because both would claim
+// the group registers.
 func (d *QualcommPrimaryClockControl) AttachGPIOKeypad(keypad *QualcommGPIOKeypad) error {
-	if keypad == nil || d.keypad != nil || d.touchscreen != nil || keypad.inputMask()&^d.inputMask != 0 {
+	if keypad == nil || d.keypad != nil || keypad.inputMask()&^d.inputMask != 0 ||
+		d.touchscreen != nil && len(keypad.profile.InterruptGroups) != 0 {
 		return fmt.Errorf("attach Qualcomm GPIO keypad: %w", ErrQualcommPrimaryClockMMIO)
 	}
 	d.keypad = keypad
@@ -201,7 +205,8 @@ func (d *QualcommPrimaryClockControl) AttachGPIOKeypad(keypad *QualcommGPIOKeypa
 
 // AttachTouchscreen connects a board's pen-detect GPIO group to this aperture.
 func (d *QualcommPrimaryClockControl) AttachTouchscreen(touchscreen *QualcommTSC2007) error {
-	if touchscreen == nil || d.touchscreen != nil || d.keypad != nil {
+	if touchscreen == nil || d.touchscreen != nil ||
+		d.keypad != nil && len(d.keypad.profile.InterruptGroups) != 0 {
 		return fmt.Errorf("attach Qualcomm touchscreen: %w", ErrQualcommPrimaryClockMMIO)
 	}
 	d.touchscreen = touchscreen
@@ -279,6 +284,11 @@ func (d *QualcommPrimaryClockControl) SaveState() ([]byte, error) {
 			return nil, err
 		}
 		version = 7
+		if d.keypad != nil {
+			// Both devices are present: the keypad state precedes the
+			// touchscreen state, each with its own length.
+			version = 8
+		}
 	}
 	var output bytes.Buffer
 	output.WriteString("QPCC")
@@ -295,6 +305,11 @@ func (d *QualcommPrimaryClockControl) SaveState() ([]byte, error) {
 		_ = binary.Write(&output, binary.LittleEndian, uint32(len(keypadState)))
 		_, _ = output.Write(keypadState)
 	} else if version == 7 {
+		_ = binary.Write(&output, binary.LittleEndian, uint32(len(touchscreenState)))
+		_, _ = output.Write(touchscreenState)
+	} else if version == 8 {
+		_ = binary.Write(&output, binary.LittleEndian, uint32(len(keypadState)))
+		_, _ = output.Write(keypadState)
 		_ = binary.Write(&output, binary.LittleEndian, uint32(len(touchscreenState)))
 		_, _ = output.Write(touchscreenState)
 	}
@@ -325,7 +340,7 @@ func (d *QualcommPrimaryClockControl) loadState(state []byte, allowInputExpansio
 		if !allowInputExpansion && d.inputMask != inputMask {
 			return ErrInvalidState
 		}
-	} else if version == 5 || version == 6 || version == 7 {
+	} else if version >= 5 && version <= 8 {
 		if binary.Read(reader, binary.LittleEndian, &inputMask) != nil || inputMask != d.inputMask {
 			return ErrInvalidState
 		}
@@ -342,8 +357,10 @@ func (d *QualcommPrimaryClockControl) loadState(state []byte, allowInputExpansio
 	minimumRemaining := int(count) * 8
 	if version == 6 || version == 7 {
 		minimumRemaining += 4
+	} else if version == 8 {
+		minimumRemaining += 8
 	}
-	if reader.Len() < minimumRemaining || version != 6 && version != 7 && reader.Len() != minimumRemaining {
+	if reader.Len() < minimumRemaining || version < 6 && reader.Len() != minimumRemaining {
 		return ErrInvalidState
 	}
 	registers := make(map[uint32]uint32, count)
@@ -391,6 +408,40 @@ func (d *QualcommPrimaryClockControl) loadState(state []byte, allowInputExpansio
 		touchscreenState := make([]byte, touchscreenStateLength)
 		if _, err := io.ReadFull(reader, touchscreenState); err != nil || reader.Len() != 0 {
 			return ErrInvalidState
+		}
+		if err := d.touchscreen.LoadState(touchscreenState); err != nil {
+			return err
+		}
+		if d.keypad != nil {
+			// The checkpoint predates this board's polled key matrix.
+			if !allowInputExpansion {
+				return ErrInvalidState
+			}
+			if err := d.keypad.Reset(); err != nil {
+				return err
+			}
+		}
+	} else if version == 8 {
+		if d.keypad == nil || d.touchscreen == nil {
+			return ErrInvalidState
+		}
+		var keypadStateLength, touchscreenStateLength uint32
+		if binary.Read(reader, binary.LittleEndian, &keypadStateLength) != nil ||
+			uint64(keypadStateLength) > uint64(reader.Len()) {
+			return ErrInvalidState
+		}
+		keypadState := make([]byte, keypadStateLength)
+		if _, err := io.ReadFull(reader, keypadState); err != nil ||
+			binary.Read(reader, binary.LittleEndian, &touchscreenStateLength) != nil ||
+			reader.Len() != int(touchscreenStateLength) {
+			return ErrInvalidState
+		}
+		touchscreenState := make([]byte, touchscreenStateLength)
+		if _, err := io.ReadFull(reader, touchscreenState); err != nil {
+			return ErrInvalidState
+		}
+		if err := d.keypad.LoadState(keypadState); err != nil {
+			return err
 		}
 		if err := d.touchscreen.LoadState(touchscreenState); err != nil {
 			return err

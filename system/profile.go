@@ -865,6 +865,38 @@ func (p BoardProfile) Validate() error {
 				return fmt.Errorf("board profile %q shares primary-clock input line %d with its keypad", p.ID, line)
 			}
 		}
+		for _, column := range keypad.AuxiliaryColumns {
+			// An auxiliary column is active low, so its profiled input word
+			// must exist and idle with the bit set; a directly wired key
+			// cannot drive the same bit.
+			idleHigh := false
+			for _, input := range p.BootControlGPIOInputs {
+				if input.Offset == column.Offset && input.Value&(uint32(1)<<column.Bit) != 0 {
+					idleHigh = true
+				}
+			}
+			if !idleHigh {
+				return fmt.Errorf(
+					"board profile %q keypad auxiliary column 0x%x bit %d has no idle-high GPIO input",
+					p.ID, column.Offset, column.Bit,
+				)
+			}
+			for _, key := range p.BootControlGPIOInputKeys {
+				if key.Offset == column.Offset && key.Bit == column.Bit {
+					return fmt.Errorf(
+						"board profile %q shares GPIO input 0x%x bit %d with its keypad",
+						p.ID, column.Offset, column.Bit,
+					)
+				}
+			}
+		}
+		for _, key := range keypad.Keys {
+			for _, direct := range p.BootControlGPIOInputKeys {
+				if key.ID == direct.ID {
+					return fmt.Errorf("board profile %q repeats control ID %q", p.ID, key.ID)
+				}
+			}
+		}
 		secondaryOffsets := make(map[uint32]struct{}, len(qualcommSecondaryClockOffsets)+len(p.SecondaryClockWritableOffsets))
 		for _, offset := range qualcommSecondaryClockOffsets {
 			secondaryOffsets[offset] = struct{}{}
@@ -923,8 +955,10 @@ func (p BoardProfile) Validate() error {
 		}
 	}
 	if touchscreen := p.Touchscreen; touchscreen != nil {
-		if p.Keypad != nil {
-			return fmt.Errorf("board profile %q has both keypad and touchscreen GPIO devices", p.ID)
+		// A polled matrix owns no GPIO interrupt group and can share the
+		// aperture; an interrupt-driven one would claim the same registers.
+		if p.Keypad != nil && len(p.Keypad.InterruptGroups) != 0 {
+			return fmt.Errorf("board profile %q has both keypad and touchscreen GPIO interrupt groups", p.ID)
 		}
 		if err := touchscreen.validate(); err != nil {
 			return fmt.Errorf("board profile %q touchscreen: %w", p.ID, err)
@@ -1996,10 +2030,15 @@ func (p BoardProfile) AttachKeypad(
 			usesSecondaryClock = true
 		}
 	}
+	usesAuxiliaryColumns := len(p.Keypad.AuxiliaryColumns) != 0
 	if usesInterrupt && interruptController == nil || usesSecondaryClock && secondaryClock == nil {
 		return nil, fmt.Errorf("attach board profile %q keypad: nil GPIO output device", p.ID)
 	}
+	if usesAuxiliaryColumns && interruptController == nil {
+		return nil, fmt.Errorf("attach board profile %q keypad: nil GPIO input device", p.ID)
+	}
 	if primaryClock.keypad != nil ||
+		usesAuxiliaryColumns && interruptController.gpioReadObserver != nil ||
 		usesInterrupt && interruptController.gpioWriteObserver != nil ||
 		usesSecondaryClock && secondaryClock.gpioWriteObserver != nil {
 		return nil, fmt.Errorf("attach board profile %q keypad: GPIO device already attached", p.ID)
@@ -2021,6 +2060,11 @@ func (p BoardProfile) AttachKeypad(
 		observer := qualcommGPIOKeypadBankObserver{keypad: keypad, bank: QualcommGPIOOutputSecondaryClock}
 		if err := secondaryClock.AttachGPIOWriteObserver(observer); err != nil {
 			return nil, fmt.Errorf("attach board profile %q secondary-clock keypad outputs: %w", p.ID, err)
+		}
+	}
+	if usesAuxiliaryColumns {
+		if err := interruptController.AttachGPIOReadObserver(keypad); err != nil {
+			return nil, fmt.Errorf("attach board profile %q keypad auxiliary inputs: %w", p.ID, err)
 		}
 	}
 	return keypad, nil
@@ -3583,6 +3627,33 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 		profile.BootControlGPIOInputs,
 		QualcommGPIOInputRegister{Offset: 0x40, Value: 0x00000020},
 	)
+	// hsg_W4200.c drives the matrix through bits 10 and 11 of the GPIO output
+	// word at +0x0400 of the secondary clock aperture: both set while it
+	// waits for any key, then one at a time (0x400, 0x800) while it scans.
+	// Its sense masks are 0x01, 0x02, 0x04, 0x08, 0x20 and 0x10 in that
+	// table order, and its key table gives the first drive line raw codes
+	// 0x54, 0x55, 0x51, 0x52 and 0x50 on the first five of them: volume up
+	// and down, END, CLR and SEND. The scan is polled from the handset task,
+	// so no GPIO interrupt group belongs to it. The remaining positions
+	// (codes 0xbb and 0x8d on the second drive line, 0xd6 on mask 0x10) stay
+	// unnamed until their handset-facing meaning is established.
+	profile.Keypad = &QualcommGPIOKeypadProfile{
+		Columns: []uint8{0, 1, 2, 3, 4},
+		AuxiliaryColumns: []QualcommGPIOKeypadAuxiliaryColumnProfile{
+			{Offset: 0x40, Bit: 5},
+		},
+		Rows: []QualcommGPIOKeypadRowProfile{
+			{OutputBank: QualcommGPIOOutputSecondaryClock, OutputOffset: 0x0400, OutputMask: 0x00000400},
+			{OutputBank: QualcommGPIOOutputSecondaryClock, OutputOffset: 0x0400, OutputMask: 0x00000800},
+		},
+		Keys: []QualcommGPIOKeyProfile{
+			{ID: "volume-up", Row: 0, Column: 0},
+			{ID: "volume-down", Row: 0, Column: 1},
+			{ID: "end", Row: 0, Column: 2},
+			{ID: "back", Row: 0, Column: 3},
+			{ID: "send", Row: 0, Column: 5},
+		},
+	}
 	// Once every task has cast its sleep vote, DC17's sleep task stops the
 	// ARM clock by storing 1 to CHIP_BASE+0x0204 and expects to continue only
 	// after an interrupt. Without the gate that store returned at once and
