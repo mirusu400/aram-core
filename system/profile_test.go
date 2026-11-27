@@ -1077,6 +1077,14 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 				{Offset: 0x000070ba, Width: Width16, Value: 0},
 			},
 		},
+		{
+			MemoryID: "adsp-address-space", Offset: 0x00201f92,
+			Width: Width16, Request: 0x0002,
+			Writes: []MemoryResponseWriteProfile{
+				{Offset: 0x00201f92, Width: Width16, Value: 0},
+				{Offset: 0x000070ba, Width: Width16, Value: 0xffff},
+			},
+		},
 	} {
 		found := false
 		for _, response := range profile.MemoryWriteResponses {
@@ -1085,6 +1093,31 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 		if !found {
 			t.Fatalf("SPH-W4200 audio DSP response %+v is not profiled", want)
 		}
+	}
+	// The Q3Dimension graphics module of DSP image 0x0b, and the latched
+	// application-DSP interrupt child it reports through.
+	if want := (&QualcommGraphicsDSPProfile{
+		MemoryID:      "adsp-address-space",
+		ResetOffset:   0x00c00000,
+		TriggerOffset: 0x00c00008, TriggerValue: 0x88000000,
+		CommandOffset:       0x000071f8,
+		ModuleVersionOffset: 0x000070f4, ModuleVersion: 0x12000315,
+		StateOffset:        0x00206f5c,
+		ReadyOffset:        0x00206f5a,
+		ArrayAddressOffset: 0x00407670,
+		ArraySizeOffset:    0x00206f58,
+		StampOffset:        0x00407698,
+		EventRingOffset:    0x000071d8, EventRingLengthOffset: 0x00007214,
+		EventRingLength:            16,
+		PrivateStateOffset:         0x07f00000,
+		InterruptGroupStatusOffset: 0x84, InterruptGroupMask: 0x01,
+	}); !reflect.DeepEqual(profile.GraphicsDSP, want) {
+		t.Fatalf("SPH-W4200 graphics DSP = %+v", profile.GraphicsDSP)
+	}
+	if group := profile.VectoredInterrupt.Groups[0]; group != (QualcommVectoredInterruptGroupConfig{
+		Source: 11, EnableOffset: 0x10, StatusOffset: 0x84, ValidMask: 0x07, LatchedMask: 0x07,
+	}) {
+		t.Fatalf("SPH-W4200 application-DSP interrupt group = %+v", group)
 	}
 	for _, rule := range profile.ADSPMailbox.ControlRules {
 		foundADSPCommandResponse = foundADSPCommandResponse || reflect.DeepEqual(rule, QualcommADSPControlRuleProfile{

@@ -1165,6 +1165,11 @@ func newSamsungQualcommMachine(
 	); err != nil {
 		return fail(err)
 	}
+	if board.GraphicsDSP != nil {
+		if err := board.AttachGraphicsDSP(bus, vectoredInterrupts); err != nil {
+			return fail(err)
+		}
+	}
 	var panelProbe *system.LCDTransferProbe
 	if options.ProbePanelProtocol {
 		panelProbe = system.NewLCDTransferProbe()

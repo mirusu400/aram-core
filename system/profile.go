@@ -591,6 +591,7 @@ type BoardProfile struct {
 	LegacyTopVectoredInterruptOffset          uint32
 	Memory                                    []MemoryRegionProfile
 	MemoryWriteResponses                      []MemoryWriteResponseProfile
+	GraphicsDSP                               *QualcommGraphicsDSPProfile
 	ReadOnlyRegisters                         []ReadOnlyRegisterProfile
 	LatchedRegisters                          []LatchedRegisterProfile
 	LatchedRegisterWindows                    []LatchedRegisterWindowProfile
@@ -1196,6 +1197,14 @@ func (p BoardProfile) Validate() error {
 		offset   uint32
 		width    Width
 		request  uint32
+	}
+	if p.GraphicsDSP != nil {
+		if err := p.GraphicsDSP.validate(p.Memory); err != nil {
+			return err
+		}
+		if p.VectoredInterrupt == nil {
+			return fmt.Errorf("Qualcomm graphics DSP needs a vectored interrupt controller")
+		}
 	}
 	responses := make(map[memoryResponseKey]struct{}, len(p.MemoryWriteResponses))
 	for _, response := range p.MemoryWriteResponses {
@@ -3596,7 +3605,40 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 				{Offset: 0x000070ba, Width: Width16, Value: 0},
 			},
 		},
+		// Command 2 returns the image to its just-started state. voc_state
+		// issues it when another client changes the loaded modules without a
+		// fresh download, then waits for -1 exactly as it does after one.
+		MemoryWriteResponseProfile{
+			MemoryID: "adsp-address-space", Offset: 0x00201f92,
+			Width: Width16, Request: 0x0002,
+			Writes: []MemoryResponseWriteProfile{
+				{Offset: 0x00201f92, Width: Width16, Value: 0},
+				{Offset: 0x000070ba, Width: Width16, Value: 0xffff},
+			},
+		},
 	)
+	// The graphics-capable DSP image (0x0b) publishes the Q3Dimension module's
+	// ARM interface at these addresses; they are entries 0x694-0x6c0 and 0x830
+	// of that image's variable table. qglDSPSrvInit waits for the initialised
+	// marker, then submits command arrays through qgldsp_command.
+	profile.GraphicsDSP = &QualcommGraphicsDSPProfile{
+		MemoryID:      "adsp-address-space",
+		ResetOffset:   0x00c00000,
+		TriggerOffset: 0x00c00008, TriggerValue: 0x88000000,
+		CommandOffset: 0x000071f8,
+		// The image stores the module version 0x0315.0x1200 at +0x70f4.
+		ModuleVersionOffset: 0x000070f4, ModuleVersion: 0x12000315,
+		StateOffset:        0x00206f5c,
+		ReadyOffset:        0x00206f5a,
+		ArrayAddressOffset: 0x00407670,
+		ArraySizeOffset:    0x00206f58,
+		StampOffset:        0x00407698,
+		EventRingOffset:    0x000071d8, EventRingLengthOffset: 0x00007214,
+		EventRingLength:    16,
+		PrivateStateOffset: 0x07f00000,
+		// Application-DSP interrupt 0 is child bit 0 of compact-VIC group 11.
+		InterruptGroupStatusOffset: 0x84, InterruptGroupMask: 0x01,
+	}
 	// DC17's QDSP command queue submits its shared-buffer address through the
 	// mailbox write-control word itself. The mailbox clears the hardware mutex
 	// bit before matching control rules, so 0x80020000 is observed here as
@@ -4489,7 +4531,10 @@ func enableMSM6280VectoredInterruptGroups(profile *BoardProfile) {
 	interrupts := *profile.VectoredInterrupt
 	interrupts.GroupCount = 6
 	interrupts.Groups = [qualcommVICMaximumGroups]QualcommVectoredInterruptGroupConfig{
-		{Source: 11, EnableOffset: 0x10, StatusOffset: 0x84, ValidMask: 0x07},
+		// Group 11 carries the three application-DSP interrupt lines. The DSP
+		// pulses them; the dispatcher clears a child through +0x10 before it
+		// calls the registered handler.
+		{Source: 11, EnableOffset: 0x10, StatusOffset: 0x84, ValidMask: 0x07, LatchedMask: 0x07},
 		{Source: 14, EnableOffset: 0x14, StatusOffset: 0x88, ValidMask: 0x03},
 		{Source: 17, EnableOffset: 0x18, StatusOffset: 0x8c, ValidMask: 0x3f},
 		{Source: 19, EnableOffset: 0x1c, StatusOffset: 0x90, ValidMask: 0x0f},
