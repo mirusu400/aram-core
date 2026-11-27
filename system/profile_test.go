@@ -1029,15 +1029,23 @@ func TestSPHW4200DC17BoardDeclaresSecondRAMBankAndR61509Panel(t *testing.T) {
 	foundExternalBytePorts := [2]bool{}
 	foundExternalGPIO := [8]bool{}
 	foundAMSSInterruptRegisters := [5]bool{}
+	// Each of the two extra EBI chip-selects is 64 MiB of ordinary RAM
+	// followed by a page-backed, unpopulated upper half.
+	banks := 0
 	for _, memory := range profile.Memory {
-		foundSecondRAM = foundSecondRAM || memory == (MemoryRegionProfile{
-			ID: "w4200-ebi-ram-bank-1", Kind: MemorySparseRAM,
-			Address: 0x08000000, Size: 0x08000000,
-		})
-		foundSharedConfig = foundSharedConfig || memory == (MemoryRegionProfile{
-			ID: "w4200-shared-config-segment", Kind: MemorySparseRAM,
-			Address: 0x18000000, Size: 0x08000000,
-		})
+		switch memory {
+		case MemoryRegionProfile{ID: "w4200-ebi-ram-bank-1", Kind: MemoryRAM, Address: 0x08000000, Size: 0x04000000},
+			MemoryRegionProfile{ID: "w4200-ebi-ram-bank-1-aperture", Kind: MemorySparseRAM, Address: 0x0c000000, Size: 0x04000000}:
+			banks++
+			foundSecondRAM = banks&3 != 0
+		case MemoryRegionProfile{ID: "w4200-shared-config-segment", Kind: MemoryRAM, Address: 0x18000000, Size: 0x04000000},
+			MemoryRegionProfile{ID: "w4200-shared-config-aperture", Kind: MemorySparseRAM, Address: 0x1c000000, Size: 0x04000000}:
+			banks += 4
+			foundSharedConfig = true
+		}
+	}
+	if banks != 10 {
+		t.Fatalf("SPH-W4200 RAM bank halves matched = %d, want both halves of both banks", banks)
 	}
 	for _, response := range profile.MemoryWriteResponses {
 		foundADSPDownloadResponse = foundADSPDownloadResponse || reflect.DeepEqual(response, MemoryWriteResponseProfile{

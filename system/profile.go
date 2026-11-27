@@ -3731,20 +3731,28 @@ func SPHW4200DC17BoardProfile() BoardProfile {
 		Address: 0x01078ccc, Mode: cpu.ModeThumb, Return: HLEReturnLinkRegister,
 	})
 	// DC17 clears its second static-data segment at 0x08000000 before the
-	// AMSS handoff. Expose the MSM6280's adjacent EBI chip-select aperture as
-	// page-backed RAM so the complete address window is available without a
-	// second eager 128 MiB host allocation.
+	// AMSS handoff, and its final two progressive-ELF records form the
+	// Qualcomm shared configuration segment at 0x18000000..0x1a5e9900, with
+	// dynamically loaded application modules placing their static data
+	// directly above it (the built-in pet game constructs objects at
+	// 0x1a6358xx). The handset fits 64 MiB behind each of these two EBI
+	// chip-selects: AMSS runs its heaps and relocated code up to 0x0bffffff
+	// and never touches the upper half of either aperture. The populated
+	// halves are ordinary RAM so the CPU can address them directly; the
+	// unpopulated halves stay page-backed so the complete chip-select window
+	// remains mapped without a further eager host allocation.
 	profile.Memory = append(profile.Memory, MemoryRegionProfile{
-		ID: "w4200-ebi-ram-bank-1", Kind: MemorySparseRAM,
-		Address: 0x08000000, Size: 0x08000000,
+		ID: "w4200-ebi-ram-bank-1", Kind: MemoryRAM,
+		Address: 0x08000000, Size: 0x04000000,
 	}, MemoryRegionProfile{
-		// DC17's final two progressive-ELF records form the Qualcomm shared
-		// configuration segment at 0x18000000..0x1a5e9900. Dynamically loaded
-		// application modules place their static data directly above it (the
-		// built-in pet game constructs objects at 0x1a6358xx), so expose the
-		// complete EBI chip-select aperture as page-backed RAM like bank 1.
-		ID: "w4200-shared-config-segment", Kind: MemorySparseRAM,
-		Address: 0x18000000, Size: 0x08000000,
+		ID: "w4200-ebi-ram-bank-1-aperture", Kind: MemorySparseRAM,
+		Address: 0x0c000000, Size: 0x04000000,
+	}, MemoryRegionProfile{
+		ID: "w4200-shared-config-segment", Kind: MemoryRAM,
+		Address: 0x18000000, Size: 0x04000000,
+	}, MemoryRegionProfile{
+		ID: "w4200-shared-config-aperture", Kind: MemorySparseRAM,
+		Address: 0x1c000000, Size: 0x04000000,
 	})
 	// AMSS polls bit 1 of this external-bus status word until the controller is
 	// ready. No write to the status address occurs during initialization.
